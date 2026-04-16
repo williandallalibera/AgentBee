@@ -1,0 +1,283 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { updateIntegration } from "@/actions/integrations";
+
+type InitialConfigs = Record<string, Record<string, unknown>>;
+
+export function IntegrationForms({
+  localMode = false,
+  initialConfigs = {},
+}: {
+  localMode?: boolean;
+  initialConfigs?: InitialConfigs;
+}) {
+  const router = useRouter();
+  const [openAiApiKey, setOpenAiApiKey] = useState(
+    String(initialConfigs.openai?.api_key ?? ""),
+  );
+  const [openAiModel, setOpenAiModel] = useState(
+    String(initialConfigs.openai?.model ?? "gpt-4o-mini"),
+  );
+  const [chatUrl, setChatUrl] = useState(
+    String(initialConfigs.google_chat?.webhook_url ?? ""),
+  );
+  const [instagramUserId, setInstagramUserId] = useState(
+    String(initialConfigs.instagram?.ig_user_id ?? ""),
+  );
+  const [instagramAccessToken, setInstagramAccessToken] = useState(
+    String(initialConfigs.instagram?.access_token ?? ""),
+  );
+  const [linkedinOrgId, setLinkedinOrgId] = useState(
+    String(initialConfigs.linkedin?.organization_id ?? ""),
+  );
+  const [linkedinAccessToken, setLinkedinAccessToken] = useState(
+    String(initialConfigs.linkedin?.access_token ?? ""),
+  );
+  const [workspaceServiceEmail, setWorkspaceServiceEmail] = useState(
+    String(initialConfigs.google_workspace?.service_account_email ?? ""),
+  );
+  const [workspaceDelegatedUser, setWorkspaceDelegatedUser] = useState(
+    String(initialConfigs.google_workspace?.delegated_admin_email ?? ""),
+  );
+  const [msg, setMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  async function saveOpenAi() {
+    if (localMode) {
+      setMsg("Modo local: configuração desabilitada.");
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const r = await updateIntegration({
+      provider: "openai",
+      status: "connected",
+      config: {
+        api_key: openAiApiKey,
+        model: openAiModel,
+      },
+    });
+    setMsg("error" in r && r.error ? r.error : "OpenAI salvo.");
+    setSaving(false);
+    router.refresh();
+  }
+
+  async function saveChat() {
+    if (localMode) {
+      setMsg("Modo local: configuração desabilitada.");
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const r = await updateIntegration({
+      provider: "google_chat",
+      status: "connected",
+      config: { webhook_url: chatUrl },
+    });
+    setMsg("error" in r && r.error ? r.error : "Salvo.");
+    setSaving(false);
+    router.refresh();
+  }
+
+  async function saveInstagram() {
+    if (localMode) {
+      setMsg("Modo local: configuração desabilitada.");
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const r = await updateIntegration({
+      provider: "instagram",
+      status: "connected",
+      config: {
+        ig_user_id: instagramUserId,
+        access_token: instagramAccessToken,
+      },
+    });
+    setMsg("error" in r && r.error ? r.error : "Instagram salvo.");
+    setSaving(false);
+    router.refresh();
+  }
+
+  async function saveLinkedIn() {
+    if (localMode) {
+      setMsg("Modo local: configuração desabilitada.");
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const r = await updateIntegration({
+      provider: "linkedin",
+      status: "connected",
+      config: {
+        organization_id: linkedinOrgId,
+        access_token: linkedinAccessToken,
+      },
+    });
+    setMsg("error" in r && r.error ? r.error : "LinkedIn salvo.");
+    setSaving(false);
+    router.refresh();
+  }
+
+  async function saveGoogleWorkspace() {
+    if (localMode) {
+      setMsg("Modo local: configuração desabilitada.");
+      return;
+    }
+    setSaving(true);
+    setMsg(null);
+    const r = await updateIntegration({
+      provider: "google_workspace",
+      status: "connected",
+      config: {
+        service_account_email: workspaceServiceEmail,
+        delegated_admin_email: workspaceDelegatedUser,
+      },
+    });
+    setMsg("error" in r && r.error ? r.error : "Google Workspace salvo.");
+    setSaving(false);
+    router.refresh();
+  }
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-gray-900 dark:text-white">OpenAI</p>
+          <Label htmlFor="openai-key">API Key</Label>
+          <Input
+            id="openai-key"
+            type="password"
+            value={openAiApiKey}
+            onChange={(e) => setOpenAiApiKey(e.target.value)}
+            placeholder="sk-..."
+            disabled={localMode}
+          />
+          <Label htmlFor="openai-model">Modelo</Label>
+          <Input
+            id="openai-model"
+            value={openAiModel}
+            onChange={(e) => setOpenAiModel(e.target.value)}
+            placeholder="gpt-4o-mini"
+            disabled={localMode}
+          />
+          <Button type="button" onClick={saveOpenAi} disabled={localMode || saving}>
+            Salvar OpenAI
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-gray-900 dark:text-white">Google Chat</p>
+          <Label htmlFor="gc">Webhook URL do espaço</Label>
+          <Input
+            id="gc"
+            value={chatUrl}
+            onChange={(e) => setChatUrl(e.target.value)}
+            placeholder="https://chat.googleapis.com/v1/spaces/..."
+            disabled={localMode}
+          />
+          <Button type="button" onClick={saveChat} disabled={localMode || saving}>
+            Salvar Google Chat
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-gray-900 dark:text-white">Instagram</p>
+          <Label htmlFor="ig-user">IG User ID</Label>
+          <Input
+            id="ig-user"
+            value={instagramUserId}
+            onChange={(e) => setInstagramUserId(e.target.value)}
+            placeholder="1784..."
+            disabled={localMode}
+          />
+          <Label htmlFor="ig-token">Access Token</Label>
+          <Input
+            id="ig-token"
+            type="password"
+            value={instagramAccessToken}
+            onChange={(e) => setInstagramAccessToken(e.target.value)}
+            placeholder="Token Instagram Graph API"
+            disabled={localMode}
+          />
+          <Button type="button" onClick={saveInstagram} disabled={localMode || saving}>
+            Salvar Instagram
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-gray-900 dark:text-white">LinkedIn</p>
+          <Label htmlFor="li-org">Organization ID</Label>
+          <Input
+            id="li-org"
+            value={linkedinOrgId}
+            onChange={(e) => setLinkedinOrgId(e.target.value)}
+            placeholder="urn:li:organization:123456"
+            disabled={localMode}
+          />
+          <Label htmlFor="li-token">Access Token</Label>
+          <Input
+            id="li-token"
+            type="password"
+            value={linkedinAccessToken}
+            onChange={(e) => setLinkedinAccessToken(e.target.value)}
+            placeholder="Token OAuth do LinkedIn"
+            disabled={localMode}
+          />
+          <Button type="button" onClick={saveLinkedIn} disabled={localMode || saving}>
+            Salvar LinkedIn
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-gray-900 dark:text-white">Google Workspace</p>
+          <div className="space-y-2">
+            <Label htmlFor="gw-service-email">Service account e-mail</Label>
+            <Input
+              id="gw-service-email"
+              value={workspaceServiceEmail}
+              onChange={(e) => setWorkspaceServiceEmail(e.target.value)}
+              placeholder="agentbee-service@project.iam.gserviceaccount.com"
+              disabled={localMode}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="gw-admin-email">Usuário delegado (admin)</Label>
+            <Input
+              id="gw-admin-email"
+              value={workspaceDelegatedUser}
+              onChange={(e) => setWorkspaceDelegatedUser(e.target.value)}
+              placeholder="admin@empresa.com"
+              disabled={localMode}
+            />
+          </div>
+          <Button
+            type="button"
+            onClick={saveGoogleWorkspace}
+            disabled={localMode || saving}
+            variant="outline"
+          >
+            Salvar Google Workspace
+          </Button>
+        </div>
+      </div>
+
+      {msg ? (
+        <p className="lg:col-span-2 text-sm text-muted-foreground">{msg}</p>
+      ) : null}
+    </div>
+  );
+}
