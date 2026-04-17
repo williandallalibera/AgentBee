@@ -122,12 +122,15 @@ export const calendarD1Reminder = schedules.task({
 
       if (webhookUrl) {
         await sendGoogleChatMessage(webhookUrl, {
-          title: "Bloqueio D-1: aprovação final pendente",
+          title: "Atenção: bloqueei uma publicação por falta de aprovação final",
           subtitle: item.topic_title ?? item.topic ?? "Postagem planejada",
           lines: [
             `Data planejada: ${item.planned_date}`,
-            "A publicação foi bloqueada até aprovação final.",
-            "Use o comando: aprovar <task_id> ou reagendar <item_id> <yyyy-mm-dd>.",
+            "A publicação ficou bloqueada até a aprovação final passar.",
+            item.content_task_id
+              ? `Se estiver tudo certo, podem me responder "aprovar ${item.content_task_id}".`
+              : "Posso ajudar a destravar isso por aqui.",
+            `Para mover a data, respondam "reagendar ${item.id} <yyyy-mm-dd>".`,
           ],
           linkUrl: approvalLink,
           linkLabel: "Resolver agora",

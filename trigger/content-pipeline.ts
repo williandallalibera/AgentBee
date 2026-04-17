@@ -188,9 +188,14 @@ export const contentPipeline = task({
 
     if (webhook) {
       await sendGoogleChatMessage(webhook, {
-        title: "Primeira aprovação — resumo da peça",
+        title: "Preciso de uma revisão rápida da direção desta peça",
         subtitle: taskRow.title,
-        lines: proposal.summary_markdown.slice(0, 500).split("\n").slice(0, 8),
+        lines: [
+          ...proposal.summary_markdown.slice(0, 500).split("\n").slice(0, 6),
+          "",
+          `Se estiver ok, me respondam aqui com "aprovar ${payload.taskId}".`,
+          `Se precisarem de ajuste, podem responder "reprovar ${payload.taskId} <motivo>".`,
+        ],
         linkUrl: approvalLink,
       });
     }
@@ -342,9 +347,14 @@ export const contentPipeline = task({
 
     if (webhook) {
       await sendGoogleChatMessage(webhook, {
-        title: "Segunda aprovação — versão final",
+        title: "Versão final pronta para aprovação",
         subtitle: taskRow.title,
-        lines: [gen.copy_markdown.slice(0, 400)],
+        lines: [
+          gen.copy_markdown.slice(0, 400),
+          "",
+          `Se estiver aprovado, me respondam aqui com "aprovar ${payload.taskId}".`,
+          `Se quiserem ajuste, podem responder "reprovar ${payload.taskId} <motivo>".`,
+        ],
         linkUrl: finalLink,
       });
     }
