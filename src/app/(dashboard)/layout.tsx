@@ -1,8 +1,7 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
-import { cookies } from "next/headers";
 import { DashboardFrame } from "@/components/layout/dashboard-frame";
-import { getSessionUser, WORKSPACE_COOKIE } from "@/lib/auth/session";
+import { getSessionUser } from "@/lib/auth/session";
 import { isLocalMode } from "@/lib/env";
 
 export default async function DashboardGroupLayout({
@@ -43,20 +42,6 @@ export default async function DashboardGroupLayout({
         return w ? { id: w.id as string, name: w.name as string } : null;
       })
       .filter(Boolean) ?? [];
-
-  const cookieStore = await cookies();
-  let currentId = cookieStore.get(WORKSPACE_COOKIE)?.value ?? null;
-
-  if (!currentId && workspaces.length > 0) {
-    currentId = workspaces[0]!.id;
-    cookieStore.set(WORKSPACE_COOKIE, currentId, {
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365,
-      sameSite: "lax",
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-    });
-  }
 
   if (workspaces.length === 0) {
     redirect("/onboarding");

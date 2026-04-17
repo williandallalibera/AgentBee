@@ -29,25 +29,28 @@ export async function getActiveWorkspaceId(): Promise<string | null> {
 export async function requireWorkspace() {
   const { supabase, user } = await requireUser();
   const wsId = await getActiveWorkspaceId();
-  if (!wsId) {
-    return { supabase, user, workspaceId: null as string | null, role: null as WorkspaceRole | null };
-  }
-  const { data: member } = await supabase
-    .from("workspace_members")
-    .select("role")
-    .eq("workspace_id", wsId)
-    .eq("user_id", user.id)
-    .maybeSingle();
 
-  if (!member) {
+  const { data: memberships } = await supabase
+    .from("workspace_members")
+    .select("workspace_id, role")
+    .eq("user_id", user.id);
+
+  if (!memberships?.length) {
+    return { supabase, user, workspaceId: null, role: null };
+  }
+
+  const activeMembership =
+    memberships.find((member) => member.workspace_id === wsId) ?? memberships[0];
+
+  if (!activeMembership) {
     return { supabase, user, workspaceId: null, role: null };
   }
 
   return {
     supabase,
     user,
-    workspaceId: wsId,
-    role: member.role as WorkspaceRole,
+    workspaceId: activeMembership.workspace_id,
+    role: activeMembership.role as WorkspaceRole,
   };
 }
 

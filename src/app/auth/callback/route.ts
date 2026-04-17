@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { WORKSPACE_COOKIE } from "@/lib/auth/session";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -27,6 +28,28 @@ export async function GET(request: Request) {
     );
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
+        const { data: memberships } = await supabase
+          .from("workspace_members")
+          .select("workspace_id")
+          .eq("user_id", user.id);
+        const workspaceId = memberships?.[0]?.workspace_id;
+
+        if (workspaceId) {
+          cookieStore.set(WORKSPACE_COOKIE, workspaceId, {
+            path: "/",
+            maxAge: 60 * 60 * 24 * 365,
+            sameSite: "lax",
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+          });
+        }
+      }
+
       return NextResponse.redirect(new URL(next, url.origin));
     }
   }
