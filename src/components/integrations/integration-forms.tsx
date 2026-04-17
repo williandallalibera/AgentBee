@@ -32,6 +32,9 @@ export function IntegrationForms({
   const [chatUrl, setChatUrl] = useState(
     String(initialConfigs.google_chat?.webhook_url ?? ""),
   );
+  const [chatBotEndpoint, setChatBotEndpoint] = useState(
+    String(initialConfigs.google_chat?.bot_endpoint_url ?? googleChatLegacyEndpoint ?? ""),
+  );
   const [instagramUserId, setInstagramUserId] = useState(
     String(initialConfigs.instagram?.ig_user_id ?? ""),
   );
@@ -57,6 +60,8 @@ export function IntegrationForms({
   const effectiveGoogleChatLegacyEndpoint =
     googleChatLegacyEndpoint ||
     "https://seu-app-host/api/webhooks/google-chat?token=<GOOGLE_CHAT_VERIFICATION_TOKEN>";
+  const effectiveConfiguredChatBotEndpoint =
+    chatBotEndpoint.trim() || effectiveGoogleChatLegacyEndpoint;
 
   async function saveOpenAi() {
     if (localMode) {
@@ -90,6 +95,7 @@ export function IntegrationForms({
       status: "connected",
       config: {
         ...(initialConfigs.google_chat ?? {}),
+        bot_endpoint_url: effectiveConfiguredChatBotEndpoint,
         webhook_url: chatUrl,
       },
     });
@@ -204,10 +210,17 @@ export function IntegrationForms({
             disabled
           />
           <Label htmlFor="gc-endpoint">Endpoint do app</Label>
-          <Input id="gc-endpoint" value={effectiveGoogleChatLegacyEndpoint} readOnly disabled />
+          <Input
+            id="gc-endpoint"
+            value={chatBotEndpoint}
+            onChange={(e) => setChatBotEndpoint(e.target.value)}
+            placeholder={effectiveGoogleChatLegacyEndpoint}
+            disabled={localMode}
+          />
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Use exatamente esse formato no Google Chat. O endpoint base publicado do bot continua
-            sendo {effectiveGoogleChatEndpointBase}.
+            Cole aqui exatamente o endpoint configurado no Google Chat, por exemplo{" "}
+            {effectiveGoogleChatLegacyEndpoint}. O endpoint base detectado do bot hoje é{" "}
+            {effectiveGoogleChatEndpointBase}.
           </p>
           <Label htmlFor="gc">Webhook do espaço (opcional)</Label>
           <Input
