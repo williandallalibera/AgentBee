@@ -108,6 +108,44 @@ export function getGoogleChatAuthAudience(input: {
   return resolvePublishedGoogleChatEndpoint(input);
 }
 
+/**
+ * Candidatos de `aud` para validar o Bearer do Google Chat.
+ * O JWT exige correspondência exata com o que está em "Authentication audience" no Cloud Console
+ * (URL com ou sem barra final, ou número do projeto).
+ */
+export function buildGoogleChatAudienceCandidates(input: {
+  requestUrl: string;
+  forwardedHost?: string | null;
+  forwardedProto?: string | null;
+}): string[] {
+  const configured = process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim();
+  const projectNumber = process.env.GOOGLE_CHAT_PROJECT_NUMBER?.trim();
+  const set = new Set<string>();
+
+  if (configured) {
+    addGoogleChatAudienceVariants(configured, set);
+  } else {
+    addGoogleChatAudienceVariants(resolvePublishedGoogleChatEndpoint(input), set);
+  }
+
+  if (projectNumber) {
+    set.add(projectNumber);
+  }
+
+  return Array.from(set);
+}
+
+function addGoogleChatAudienceVariants(primary: string, set: Set<string>) {
+  const t = primary.trim();
+  if (!t) return;
+  set.add(t);
+  if (t.endsWith("/")) {
+    set.add(t.replace(/\/+$/, ""));
+  } else {
+    set.add(`${t}/`);
+  }
+}
+
 export async function verifyGoogleChatRequest(input: {
   authorizationHeader: string | null;
   legacyToken: string | null;
@@ -117,13 +155,14 @@ export async function verifyGoogleChatRequest(input: {
 }): Promise<GoogleChatVerificationResult> {
   const expectedLegacyToken = process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim();
   const bearerToken = extractBearerToken(input.authorizationHeader);
-  const audience = bearerToken
-    ? getGoogleChatAuthAudience({
+  const audienceCandidates = bearerToken
+    ? buildGoogleChatAudienceCandidates({
         requestUrl: input.requestUrl,
         forwardedHost: input.forwardedHost,
         forwardedProto: input.forwardedProto,
       })
-    : null;
+    : [];
+  const primaryAudience = audienceCandidates[0] ?? null;
 
   if (expectedLegacyToken && input.legacyToken) {
     if (verifyGoogleChatToken(input.legacyToken, expectedLegacyToken)) {
@@ -132,12 +171,12 @@ export async function verifyGoogleChatRequest(input: {
 
     // Em algumas configurações híbridas, o Google Chat envia token legado e bearer.
     // Se o legado falhar mas houver bearer, tentamos validar por bearer para evitar falso negativo.
-    if (bearerToken && audience) {
-      const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audience);
+    if (bearerToken && audienceCandidates.length > 0) {
+      const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audienceCandidates);
       return {
         ...bearerResult,
         mode: "bearer",
-        audience,
+        audience: primaryAudience,
         error: bearerResult.ok
           ? undefined
           : `Token legado inválido e bearer também falhou: ${bearerResult.error ?? "Unauthorized"}`,
@@ -152,12 +191,12 @@ export async function verifyGoogleChatRequest(input: {
     };
   }
 
-  if (bearerToken && audience) {
-    const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audience);
+  if (bearerToken && audienceCandidates.length > 0) {
+    const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audienceCandidates);
     return {
       ...bearerResult,
       mode: "bearer",
-      audience,
+      audience: primaryAudience,
     };
   }
 
@@ -180,39 +219,49 @@ type GoogleChatBearerVerificationResult =
 
 async function verifyGoogleChatBearerToken(
   token: string,
-  audience: string,
+  audiences: string[],
 ): Promise<GoogleChatBearerVerificationResult> {
-  try {
-    const { payload } = await jwtVerify(token, GOOGLE_OIDC_JWKS, {
-      audience,
-      issuer: ["https://accounts.google.com", "accounts.google.com"],
-    });
+  const uniq = [...new Set(audiences.filter(Boolean))];
+  const oidcErrors: string[] = [];
 
-    const email = typeof payload.email === "string" ? payload.email : null;
-    const emailVerified = payload.email_verified === true;
-    if (email === GOOGLE_CHAT_ISSUER_EMAIL && emailVerified) {
-      return { ok: true };
-    }
-  } catch (error) {
-    const projectJwtResult = await verifyProjectNumberJwt(token, audience);
-    if (projectJwtResult.ok) {
-      return projectJwtResult;
-    }
+  for (const audience of uniq) {
+    try {
+      const { payload } = await jwtVerify(token, GOOGLE_OIDC_JWKS, {
+        audience,
+        issuer: ["https://accounts.google.com", "accounts.google.com"],
+      });
 
-    return {
-      ok: false,
-      error: combineGoogleChatErrors(
-        error,
-        projectJwtResult.error ?? "Falha ao validar bearer token do Google Chat.",
-      ),
-    };
+      const email = typeof payload.email === "string" ? payload.email : null;
+      const emailVerified = payload.email_verified === true;
+      if (email === GOOGLE_CHAT_ISSUER_EMAIL && emailVerified) {
+        return { ok: true };
+      }
+      oidcErrors.push(`aud=${audience}: emissor OIDC inesperado`);
+    } catch (error) {
+      oidcErrors.push(
+        `aud=${audience}: ${error instanceof Error ? error.message : "OIDC inválido"}`,
+      );
+    }
   }
 
+  for (const audience of uniq) {
+    const projectJwtResult = await verifyProjectNumberJwt(token, audience);
+    if (projectJwtResult.ok) {
+      return { ok: true };
+    }
+  }
+
+  const hint =
+    " Confira no Google Cloud → Chat API → Configuration se 'Authentication audience' é URL idêntica a um dos candidatos (com/sem barra final) ou defina GOOGLE_CHAT_AUTH_AUDIENCE / GOOGLE_CHAT_PROJECT_NUMBER.";
   return {
     ok: false,
-    error:
-      "Bearer token do Google Chat não pertence ao emissor esperado chat@system.gserviceaccount.com.",
+    error: `${oidcErrorsSummary(oidcErrors)}${hint}`,
   };
+}
+
+function oidcErrorsSummary(errors: string[]): string {
+  const head = errors.slice(0, 2).join(" | ");
+  return head || "Falha ao validar bearer token do Google Chat.";
 }
 
 async function verifyProjectNumberJwt(

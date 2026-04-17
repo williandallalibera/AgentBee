@@ -3,6 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type GoogleChatEventPayload = {
   type?: string;
+  /** Alguns proxies ou versões do payload podem enviar o tipo com este nome. */
+  eventType?: string;
   token?: string;
   space?: {
     name?: string;
@@ -23,6 +25,8 @@ export type GoogleChatEventPayload = {
     argumentText?: string;
     /** Texto formatado com menções `<users/...>`. */
     formattedText?: string;
+    /** Texto alternativo quando a mensagem é principalmente mídia/card. */
+    fallbackText?: string;
     thread?: {
       name?: string;
     };
@@ -816,6 +820,13 @@ function stripGoogleChatMentions(raw: string) {
     .trim();
 }
 
+/** Resolve o tipo de interação (MESSAGE, ADDED_TO_SPACE, etc.). */
+export function resolveGoogleChatEventType(
+  payload: GoogleChatEventPayload,
+): string | undefined {
+  return payload.type ?? payload.eventType ?? (payload.message ? "MESSAGE" : undefined);
+}
+
 /** Texto enviado pelo usuário no Google Chat (menções removidas quando necessário). */
 export function extractIncomingText(payload: GoogleChatEventPayload) {
   const arg = payload.message?.argumentText?.trim();
@@ -826,6 +837,9 @@ export function extractIncomingText(payload: GoogleChatEventPayload) {
 
   const formatted = payload.message?.formattedText?.trim();
   if (formatted) return stripGoogleChatMentions(formatted);
+
+  const fallback = payload.message?.fallbackText?.trim();
+  if (fallback) return stripGoogleChatMentions(fallback);
 
   return "";
 }

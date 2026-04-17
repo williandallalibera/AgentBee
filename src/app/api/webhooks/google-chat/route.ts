@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { wait } from "@trigger.dev/sdk/v3";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildGoogleChatAudienceCandidates,
   resolvePublishedGoogleChatEndpoint,
   verifyGoogleChatRequest,
 } from "@/lib/integrations/google-chat";
@@ -16,9 +17,16 @@ import {
   loadChiefConversationHistory,
   planChiefAgentResponse,
   extractIncomingText,
+  resolveGoogleChatEventType,
   resolveGoogleChatWorkspace,
   type GoogleChatEventPayload,
 } from "@/lib/chief-agent/agent";
+
+/** Limite de tempo no edge/serverless (OpenAI + Supabase deve caber em <30s para o Google). */
+export const maxDuration = 60;
+
+/** Sempre executar no servidor; o Google Chat envia POST com eventos em tempo real. */
+export const dynamic = "force-dynamic";
 
 /**
  * Webhook Google Chat — recebe eventos interativos do app e responde em tempo real.
@@ -52,7 +60,14 @@ export async function GET(request: Request) {
         "Alertas automáticos usam o webhook do espaço em Integrações (não este endpoint).",
       C_generic_replies:
         "Respostas usam dados do workspace (tarefas, calendário) e playbook quando configurados.",
+      D_bearer_audience:
+        "Se o app usa só Bearer (sem ?token=), o 'aud' do JWT deve coincidir com a URL do endpoint no Cloud Console (com ou sem barra final) ou com GOOGLE_CHAT_AUTH_AUDIENCE / GOOGLE_CHAT_PROJECT_NUMBER.",
     },
+    audience_candidates: buildGoogleChatAudienceCandidates({
+      requestUrl: request.url,
+      forwardedHost: request.headers.get("x-forwarded-host"),
+      forwardedProto: request.headers.get("x-forwarded-proto"),
+    }),
   });
 }
 
@@ -61,8 +76,26 @@ export async function POST(request: Request) {
   try {
     payload = (await request.json()) as GoogleChatEventPayload;
   } catch {
+    console.warn("google_chat_post_invalid_json");
     return NextResponse.json({ text: "Payload inválido." });
   }
+
+  const eventTypeEarly = resolveGoogleChatEventType(payload);
+  let requestHost = "";
+  try {
+    requestHost = new URL(request.url).hostname;
+  } catch {
+    requestHost = "invalid_url";
+  }
+  console.info("google_chat_post_received", {
+    eventType: eventTypeEarly ?? "unknown",
+    hasSpace: Boolean(payload.space?.name),
+    hasMessage: Boolean(payload.message),
+    hasAuthorization: Boolean(request.headers.get("authorization")),
+    hasLegacyHeader: Boolean(request.headers.get("x-goog-chat-token")),
+    hasTokenInQuery: new URL(request.url).searchParams.has("token"),
+    requestHost,
+  });
 
   const token =
     request.headers.get("x-goog-chat-token") ??
@@ -78,6 +111,7 @@ export async function POST(request: Request) {
   });
   if (!verification.ok) {
     console.warn("google_chat_auth_failed", {
+      eventType: eventTypeEarly,
       mode: verification.mode,
       audience: verification.audience,
       hasAuthorizationHeader: Boolean(request.headers.get("authorization")),
@@ -98,7 +132,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const eventType = payload.type ?? (payload.message ? "MESSAGE" : undefined);
+  const eventType = eventTypeEarly;
 
   if (eventType === "REMOVED_FROM_SPACE") {
     return NextResponse.json({});
@@ -118,6 +152,12 @@ export async function POST(request: Request) {
 
   await captureObservedGoogleChatSpace(supabase, integration, payload);
 
+  console.info("google_chat_inbound", {
+    eventType: eventType ?? "unknown",
+    hasSpace: Boolean(payload.space?.name),
+    hasMessage: Boolean(payload.message),
+  });
+
   if (eventType === "ADDED_TO_SPACE") {
     const spaceName = payload.space?.singleUserBotDm
       ? "neste chat"
@@ -133,6 +173,19 @@ export async function POST(request: Request) {
 
   const text = extractIncomingText(payload);
   if (!text) {
+    if (eventType === "CARD_CLICKED") {
+      return NextResponse.json({
+        text: "Recebi um clique em card. Esta versão do AgentBee ainda não trata botões; envie uma mensagem de texto ou use @AgentBee com um pedido.",
+      });
+    }
+    if (eventType === "APP_HOME") {
+      return NextResponse.json({
+        text: "AgentBee: no espaço, mencione o bot (@…) e peça status, aprovações ou calendário. Em DM pode enviar a mensagem direto.",
+      });
+    }
+    if (eventType === "APP_COMMAND") {
+      return NextResponse.json({ text: formatHelpReply() });
+    }
     return NextResponse.json({ text: formatHelpReply() });
   }
 
