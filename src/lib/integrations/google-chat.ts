@@ -70,14 +70,40 @@ export function buildGoogleChatEndpointUrl(appUrl: string) {
   return `${appUrl.replace(/\/$/, "")}/api/webhooks/google-chat`;
 }
 
-export function getGoogleChatAuthAudience(requestUrl: string) {
-  const configured = process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim();
-  if (configured) return configured;
+export function resolvePublishedGoogleChatEndpoint(input: {
+  requestUrl?: string | null;
+  forwardedHost?: string | null;
+  forwardedProto?: string | null;
+}) {
+  const explicitAudience = process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim();
+  if (explicitAudience) {
+    const url = new URL(explicitAudience);
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
 
-  const url = new URL(requestUrl);
-  url.search = "";
-  url.hash = "";
-  return url.toString();
+  const publicAppUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (publicAppUrl) {
+    return buildGoogleChatEndpointUrl(publicAppUrl);
+  }
+
+  const host = input.forwardedHost?.trim();
+  if (host) {
+    const proto = input.forwardedProto?.trim() || "https";
+    return buildGoogleChatEndpointUrl(`${proto}://${host}`);
+  }
+
+  if (input.requestUrl) {
+    const url = new URL(input.requestUrl);
+    return buildGoogleChatEndpointUrl(url.origin);
+  }
+
+  return buildGoogleChatEndpointUrl("http://localhost:3000");
+}
+
+export function getGoogleChatAuthAudience(requestUrl: string) {
+  return resolvePublishedGoogleChatEndpoint({ requestUrl });
 }
 
 export async function verifyGoogleChatRequest(input: {

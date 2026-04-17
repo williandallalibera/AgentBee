@@ -1,4 +1,5 @@
 import { requireWorkspaceMember } from "@/lib/auth/session";
+import { headers } from "next/headers";
 import {
   Card,
   CardContent,
@@ -10,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { IntegrationForms } from "@/components/integrations/integration-forms";
 import { isLocalMode } from "@/lib/env";
 import { localIntegrations } from "@/lib/local-mode";
+import { resolvePublishedGoogleChatEndpoint } from "@/lib/integrations/google-chat";
 
 function providerLabel(provider: string) {
   switch (provider) {
@@ -37,8 +39,20 @@ const EXPECTED_PROVIDERS = [
 ] as const;
 
 export default async function IntegrationsPage() {
+  const headerList = await headers();
+  const googleChatEndpoint = resolvePublishedGoogleChatEndpoint({
+    forwardedHost: headerList.get("x-forwarded-host") ?? headerList.get("host"),
+    forwardedProto: headerList.get("x-forwarded-proto"),
+  });
+
   if (isLocalMode()) {
-    return <IntegrationsPageView integrations={localIntegrations} localMode />;
+    return (
+      <IntegrationsPageView
+        integrations={localIntegrations}
+        localMode
+        googleChatEndpoint={googleChatEndpoint}
+      />
+    );
   }
 
   const { supabase, workspaceId } = await requireWorkspaceMember();
@@ -49,12 +63,18 @@ export default async function IntegrationsPage() {
     .eq("workspace_id", workspaceId)
     .order("provider");
 
-  return <IntegrationsPageView integrations={integrations ?? []} />;
+  return (
+    <IntegrationsPageView
+      integrations={integrations ?? []}
+      googleChatEndpoint={googleChatEndpoint}
+    />
+  );
 }
 
 function IntegrationsPageView({
   integrations,
   localMode = false,
+  googleChatEndpoint,
 }: {
   integrations: {
     id: string;
@@ -64,6 +84,7 @@ function IntegrationsPageView({
     config_metadata_json?: Record<string, unknown> | null;
   }[];
   localMode?: boolean;
+  googleChatEndpoint: string;
 }) {
   const mergedIntegrations = EXPECTED_PROVIDERS.map((provider) => {
     const existing = integrations.find((item) => item.provider === provider);
@@ -127,6 +148,7 @@ function IntegrationsPageView({
         <CardContent className="pt-4">
           <IntegrationForms
             localMode={localMode}
+            googleChatEndpoint={googleChatEndpoint}
             initialConfigs={Object.fromEntries(
               integrations.map((integration) => [
                 integration.provider,

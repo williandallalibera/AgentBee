@@ -12,9 +12,11 @@ type InitialConfigs = Record<string, Record<string, unknown>>;
 export function IntegrationForms({
   localMode = false,
   initialConfigs = {},
+  googleChatEndpoint,
 }: {
   localMode?: boolean;
   initialConfigs?: InitialConfigs;
+  googleChatEndpoint?: string;
 }) {
   const router = useRouter();
   const [openAiApiKey, setOpenAiApiKey] = useState(
@@ -52,9 +54,8 @@ export function IntegrationForms({
   );
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const googleChatEndpoint = `${
-    (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "") || "https://seu-app-host"
-  }/api/webhooks/google-chat`;
+  const effectiveGoogleChatEndpoint =
+    googleChatEndpoint || "https://seu-app-host/api/webhooks/google-chat";
 
   async function saveOpenAi() {
     if (localMode) {
@@ -194,7 +195,7 @@ export function IntegrationForms({
             AgentBee.
           </p>
           <Label htmlFor="gc-endpoint">Endpoint do app</Label>
-          <Input id="gc-endpoint" value={googleChatEndpoint} readOnly disabled />
+          <Input id="gc-endpoint" value={effectiveGoogleChatEndpoint} readOnly disabled />
           <p className="text-xs text-gray-500 dark:text-gray-400">
             No Google Chat app, configure o mesmo URL também como Authentication Audience quando
             usar HTTP endpoint URL.

@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { wait } from "@trigger.dev/sdk/v3";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
-  buildGoogleChatEndpointUrl,
   getGoogleChatAuthAudience,
+  resolvePublishedGoogleChatEndpoint,
   verifyGoogleChatRequest,
 } from "@/lib/integrations/google-chat";
 import {
@@ -23,7 +23,11 @@ import {
  * Webhook Google Chat — recebe eventos interativos do app e responde em tempo real.
  */
 export async function GET(request: Request) {
-  const endpointUrl = buildGoogleChatEndpointUrl(new URL(request.url).origin);
+  const endpointUrl = resolvePublishedGoogleChatEndpoint({
+    requestUrl: request.url,
+    forwardedHost: request.headers.get("x-forwarded-host"),
+    forwardedProto: request.headers.get("x-forwarded-proto"),
+  });
 
   return NextResponse.json({
     ok: true,
@@ -56,6 +60,13 @@ export async function POST(request: Request) {
     requestUrl: request.url,
   });
   if (!verification.ok) {
+    console.warn("google_chat_auth_failed", {
+      mode: verification.mode,
+      audience: verification.audience,
+      hasAuthorizationHeader: Boolean(request.headers.get("authorization")),
+      hasLegacyToken: Boolean(token),
+      error: verification.error ?? "Unauthorized",
+    });
     return NextResponse.json(
       { error: verification.error ?? "Unauthorized" },
       { status: verification.mode === "bearer" ? 401 : 403 },
