@@ -110,7 +110,7 @@ export async function verifyGoogleChatRequest(input: {
   requestUrl: string;
 }): Promise<GoogleChatVerificationResult> {
   const expectedLegacyToken = process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim();
-  if (expectedLegacyToken) {
+  if (expectedLegacyToken && input.legacyToken) {
     return verifyGoogleChatToken(input.legacyToken, expectedLegacyToken)
       ? { ok: true, mode: "legacy_token", audience: null }
       : {
