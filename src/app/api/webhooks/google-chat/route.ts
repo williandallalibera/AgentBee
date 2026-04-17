@@ -7,6 +7,11 @@ import {
   verifyGoogleChatRequest,
 } from "@/lib/integrations/google-chat";
 import {
+  normalizeChatWebhookPayload,
+  shouldUseWorkspaceAddonResponseFormat,
+  workspaceAddonCreateTextMessage,
+} from "@/lib/integrations/google-chat-workspace-addon";
+import {
   captureObservedGoogleChatSpace,
   formatHelpReply,
   formatPendingApprovalsReply,
@@ -68,17 +73,34 @@ export async function GET(request: Request) {
       forwardedHost: request.headers.get("x-forwarded-host"),
       forwardedProto: request.headers.get("x-forwarded-proto"),
     }),
+    workspace_addon_message_format: shouldUseWorkspaceAddonResponseFormat({})
+      ? "workspace_addon_hostAppDataAction (padrão)"
+      : "chat_api_plain_text — defina assim com GOOGLE_CHAT_WORKSPACE_ADDON=false",
   });
 }
 
 export async function POST(request: Request) {
-  let payload: GoogleChatEventPayload;
+  let rawBody: unknown;
   try {
-    payload = (await request.json()) as GoogleChatEventPayload;
+    rawBody = await request.json();
   } catch {
     console.warn("google_chat_post_invalid_json");
-    return NextResponse.json({ text: "Payload inválido." });
+    const addonFmt = shouldUseWorkspaceAddonResponseFormat({});
+    return NextResponse.json(
+      addonFmt
+        ? workspaceAddonCreateTextMessage("Payload inválido.")
+        : { text: "Payload inválido." },
+    );
   }
+
+  const useAddonResponse = shouldUseWorkspaceAddonResponseFormat(rawBody);
+  const payload = normalizeChatWebhookPayload(rawBody) as GoogleChatEventPayload;
+
+  const jsonMessage = (text: string, init?: ResponseInit) =>
+    NextResponse.json(
+      useAddonResponse ? workspaceAddonCreateTextMessage(text) : { text },
+      init,
+    );
 
   const eventTypeEarly = resolveGoogleChatEventType(payload);
   let requestHost = "";
@@ -120,16 +142,11 @@ export async function POST(request: Request) {
     });
     const status = verification.mode === "bearer" ? 401 : 403;
     const detail = verification.error ?? "Unauthorized";
-    return NextResponse.json(
-      {
-        error: detail,
-        text:
-          status === 403
-            ? `Falha na verificação do webhook (403). ${detail} Confira se a URL do app no Google Cloud Console termina com o token completo (o mesmo valor de GOOGLE_CHAT_VERIFICATION_TOKEN no deploy) e se não há espaço ou caractere cortado.`
-            : `Falha na verificação do webhook (401). ${detail} Se usa autenticação Bearer, confira GOOGLE_CHAT_AUTH_AUDIENCE e o domínio público do app.`,
-      },
-      { status },
-    );
+    const authFailText =
+      status === 403
+        ? `Falha na verificação do webhook (403). ${detail} Confira se a URL do app no Google Cloud Console termina com o token completo (o mesmo valor de GOOGLE_CHAT_VERIFICATION_TOKEN no deploy) e se não há espaço ou caractere cortado.`
+        : `Falha na verificação do webhook (401). ${detail} Se usa autenticação Bearer, confira GOOGLE_CHAT_AUTH_AUDIENCE e o domínio público do app.`;
+    return jsonMessage(authFailText, { status });
   }
 
   const eventType = eventTypeEarly;
@@ -142,12 +159,11 @@ export async function POST(request: Request) {
   const integration = await resolveGoogleChatWorkspace(supabase, payload);
 
   if (!integration) {
-    return NextResponse.json({
-      text:
-        "Ainda não consegui vincular este espaço do Google Chat ao workspace correto do AgentBee. " +
+    return jsonMessage(
+      "Ainda não consegui vincular este espaço do Google Chat ao workspace correto do AgentBee. " +
         "Se houver só um workspace com Google Chat ativo, me adicione novamente ao grupo depois do deploy. " +
         "Se houver mais de um, precisamos mapear este espaço explicitamente.",
-    });
+    );
   }
 
   await captureObservedGoogleChatSpace(supabase, integration, payload);
@@ -164,29 +180,28 @@ export async function POST(request: Request) {
       : payload.space?.displayName
         ? `em ${payload.space.displayName}`
         : "neste espaço";
-    return NextResponse.json({
-      text:
-        `AgentBee conectado ${spaceName}. ` +
+    return jsonMessage(
+      `AgentBee conectado ${spaceName}. ` +
         "Posso acompanhar aprovações, responder dúvidas operacionais, resumir o calendário e agir no fluxo quando vocês pedirem.",
-    });
+    );
   }
 
   const text = extractIncomingText(payload);
   if (!text) {
     if (eventType === "CARD_CLICKED") {
-      return NextResponse.json({
-        text: "Recebi um clique em card. Esta versão do AgentBee ainda não trata botões; envie uma mensagem de texto ou use @AgentBee com um pedido.",
-      });
+      return jsonMessage(
+        "Recebi um clique em card. Esta versão do AgentBee ainda não trata botões; envie uma mensagem de texto ou use @AgentBee com um pedido.",
+      );
     }
     if (eventType === "APP_HOME") {
-      return NextResponse.json({
-        text: "AgentBee: no espaço, mencione o bot (@…) e peça status, aprovações ou calendário. Em DM pode enviar a mensagem direto.",
-      });
+      return jsonMessage(
+        "AgentBee: no espaço, mencione o bot (@…) e peça status, aprovações ou calendário. Em DM pode enviar a mensagem direto.",
+      );
     }
     if (eventType === "APP_COMMAND") {
-      return NextResponse.json({ text: formatHelpReply() });
+      return jsonMessage(formatHelpReply());
     }
-    return NextResponse.json({ text: formatHelpReply() });
+    return jsonMessage(formatHelpReply());
   }
 
   const workspaceId = integration.workspace_id;
@@ -237,13 +252,11 @@ export async function POST(request: Request) {
       response_summary: reply,
     });
 
-    return NextResponse.json({ text: reply });
+    return jsonMessage(reply);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Falha inesperada ao processar a conversa.";
-    return NextResponse.json({
-      text: `Tive um problema ao processar isso agora: ${message}`,
-    });
+    return jsonMessage(`Tive um problema ao processar isso agora: ${message}`);
   }
 }
 
