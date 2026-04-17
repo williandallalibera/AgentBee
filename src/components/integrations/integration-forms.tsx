@@ -12,11 +12,15 @@ type InitialConfigs = Record<string, Record<string, unknown>>;
 export function IntegrationForms({
   localMode = false,
   initialConfigs = {},
-  googleChatEndpoint,
+  googleChatEndpointBase,
+  googleChatLegacyEndpoint,
+  googleChatLegacyTokenConfigured = false,
 }: {
   localMode?: boolean;
   initialConfigs?: InitialConfigs;
-  googleChatEndpoint?: string;
+  googleChatEndpointBase?: string;
+  googleChatLegacyEndpoint?: string;
+  googleChatLegacyTokenConfigured?: boolean;
 }) {
   const router = useRouter();
   const [openAiApiKey, setOpenAiApiKey] = useState(
@@ -27,12 +31,6 @@ export function IntegrationForms({
   );
   const [chatUrl, setChatUrl] = useState(
     String(initialConfigs.google_chat?.webhook_url ?? ""),
-  );
-  const [chatSpaceName, setChatSpaceName] = useState(
-    String(initialConfigs.google_chat?.space_name ?? ""),
-  );
-  const [chatSpaceDisplayName, setChatSpaceDisplayName] = useState(
-    String(initialConfigs.google_chat?.space_display_name ?? ""),
   );
   const [instagramUserId, setInstagramUserId] = useState(
     String(initialConfigs.instagram?.ig_user_id ?? ""),
@@ -54,8 +52,11 @@ export function IntegrationForms({
   );
   const [msg, setMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const effectiveGoogleChatEndpoint =
-    googleChatEndpoint || "https://seu-app-host/api/webhooks/google-chat";
+  const effectiveGoogleChatEndpointBase =
+    googleChatEndpointBase || "https://seu-app-host/api/webhooks/google-chat";
+  const effectiveGoogleChatLegacyEndpoint =
+    googleChatLegacyEndpoint ||
+    "https://seu-app-host/api/webhooks/google-chat?token=<GOOGLE_CHAT_VERIFICATION_TOKEN>";
 
   async function saveOpenAi() {
     if (localMode) {
@@ -88,9 +89,8 @@ export function IntegrationForms({
       provider: "google_chat",
       status: "connected",
       config: {
+        ...(initialConfigs.google_chat ?? {}),
         webhook_url: chatUrl,
-        space_name: chatSpaceName,
-        space_display_name: chatSpaceDisplayName,
       },
     });
     setMsg("error" in r && r.error ? r.error : "Salvo.");
@@ -190,17 +190,26 @@ export function IntegrationForms({
         <div className="space-y-2">
           <p className="text-sm font-medium text-gray-900 dark:text-white">Google Chat</p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Use o endpoint abaixo na configuração do app do Google Chat para testar o agente em
-            tempo real. O webhook do espaço continua opcional e serve só para alertas enviados pelo
-            AgentBee.
+            O modo padrão desta fase usa token de verificação no endpoint do bot. Configure esse
+            endpoint no app do Google Chat. O webhook do espaço abaixo é opcional e serve só para
+            alertas enviados pelo AgentBee.
           </p>
+          <Label htmlFor="gc-auth-mode">Modo de autenticação</Label>
+          <Input id="gc-auth-mode" value="Token de verificação" readOnly disabled />
+          <Label htmlFor="gc-token-status">Status do token</Label>
+          <Input
+            id="gc-token-status"
+            value={googleChatLegacyTokenConfigured ? "Configurado no runtime" : "Ausente no runtime"}
+            readOnly
+            disabled
+          />
           <Label htmlFor="gc-endpoint">Endpoint do app</Label>
-          <Input id="gc-endpoint" value={effectiveGoogleChatEndpoint} readOnly disabled />
+          <Input id="gc-endpoint" value={effectiveGoogleChatLegacyEndpoint} readOnly disabled />
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            No Google Chat app, configure o mesmo URL também como Authentication Audience quando
-            usar HTTP endpoint URL.
+            Use exatamente esse formato no Google Chat. O endpoint base publicado do bot continua
+            sendo {effectiveGoogleChatEndpointBase}.
           </p>
-          <Label htmlFor="gc">Webhook URL do espaço</Label>
+          <Label htmlFor="gc">Webhook do espaço (opcional)</Label>
           <Input
             id="gc"
             value={chatUrl}
@@ -208,26 +217,9 @@ export function IntegrationForms({
             placeholder="https://chat.googleapis.com/v1/spaces/..."
             disabled={localMode}
           />
-          <Label htmlFor="gc-space-name">Space name observado</Label>
-          <Input
-            id="gc-space-name"
-            value={chatSpaceName}
-            onChange={(e) => setChatSpaceName(e.target.value)}
-            placeholder="spaces/AAAA..."
-            disabled={localMode}
-          />
-          <Label htmlFor="gc-space-display">Nome do espaço</Label>
-          <Input
-            id="gc-space-display"
-            value={chatSpaceDisplayName}
-            onChange={(e) => setChatSpaceDisplayName(e.target.value)}
-            placeholder="Time AgentBee"
-            disabled={localMode}
-          />
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Se existir só um workspace com Google Chat ativo, o AgentBee aprende o espaço
-            automaticamente quando você adiciona o app. Se existir mais de um, preencha o mapping
-            acima.
+            Esse webhook é separado do endpoint do bot. Ele só é usado quando o AgentBee envia
+            avisos para um espaço do Google Chat.
           </p>
           <Button type="button" onClick={saveChat} disabled={localMode || saving}>
             Salvar Google Chat

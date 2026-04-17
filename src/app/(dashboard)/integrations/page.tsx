@@ -11,7 +11,10 @@ import { Badge } from "@/components/ui/badge";
 import { IntegrationForms } from "@/components/integrations/integration-forms";
 import { isLocalMode } from "@/lib/env";
 import { localIntegrations } from "@/lib/local-mode";
-import { resolvePublishedGoogleChatEndpoint } from "@/lib/integrations/google-chat";
+import {
+  buildGoogleChatLegacySetupUrl,
+  resolvePublishedGoogleChatEndpoint,
+} from "@/lib/integrations/google-chat";
 
 function providerLabel(provider: string) {
   switch (provider) {
@@ -40,17 +43,23 @@ const EXPECTED_PROVIDERS = [
 
 export default async function IntegrationsPage() {
   const headerList = await headers();
-  const googleChatEndpoint = resolvePublishedGoogleChatEndpoint({
+  const googleChatEndpointBase = resolvePublishedGoogleChatEndpoint({
     forwardedHost: headerList.get("x-forwarded-host") ?? headerList.get("host"),
     forwardedProto: headerList.get("x-forwarded-proto"),
   });
+  const googleChatLegacyEndpoint = buildGoogleChatLegacySetupUrl(googleChatEndpointBase);
+  const googleChatLegacyTokenConfigured = Boolean(
+    process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim(),
+  );
 
   if (isLocalMode()) {
     return (
       <IntegrationsPageView
         integrations={localIntegrations}
         localMode
-        googleChatEndpoint={googleChatEndpoint}
+        googleChatEndpointBase={googleChatEndpointBase}
+        googleChatLegacyEndpoint={googleChatLegacyEndpoint}
+        googleChatLegacyTokenConfigured={googleChatLegacyTokenConfigured}
       />
     );
   }
@@ -66,7 +75,9 @@ export default async function IntegrationsPage() {
   return (
     <IntegrationsPageView
       integrations={integrations ?? []}
-      googleChatEndpoint={googleChatEndpoint}
+      googleChatEndpointBase={googleChatEndpointBase}
+      googleChatLegacyEndpoint={googleChatLegacyEndpoint}
+      googleChatLegacyTokenConfigured={googleChatLegacyTokenConfigured}
     />
   );
 }
@@ -74,7 +85,9 @@ export default async function IntegrationsPage() {
 function IntegrationsPageView({
   integrations,
   localMode = false,
-  googleChatEndpoint,
+  googleChatEndpointBase,
+  googleChatLegacyEndpoint,
+  googleChatLegacyTokenConfigured,
 }: {
   integrations: {
     id: string;
@@ -84,7 +97,9 @@ function IntegrationsPageView({
     config_metadata_json?: Record<string, unknown> | null;
   }[];
   localMode?: boolean;
-  googleChatEndpoint: string;
+  googleChatEndpointBase: string;
+  googleChatLegacyEndpoint: string;
+  googleChatLegacyTokenConfigured: boolean;
 }) {
   const mergedIntegrations = EXPECTED_PROVIDERS.map((provider) => {
     const existing = integrations.find((item) => item.provider === provider);
@@ -148,7 +163,9 @@ function IntegrationsPageView({
         <CardContent className="pt-4">
           <IntegrationForms
             localMode={localMode}
-            googleChatEndpoint={googleChatEndpoint}
+            googleChatEndpointBase={googleChatEndpointBase}
+            googleChatLegacyEndpoint={googleChatLegacyEndpoint}
+            googleChatLegacyTokenConfigured={googleChatLegacyTokenConfigured}
             initialConfigs={Object.fromEntries(
               integrations.map((integration) => [
                 integration.provider,

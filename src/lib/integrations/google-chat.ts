@@ -70,19 +70,15 @@ export function buildGoogleChatEndpointUrl(appUrl: string) {
   return `${appUrl.replace(/\/$/, "")}/api/webhooks/google-chat`;
 }
 
+export function buildGoogleChatLegacySetupUrl(appUrl: string) {
+  return `${buildGoogleChatEndpointUrl(appUrl)}?token=<GOOGLE_CHAT_VERIFICATION_TOKEN>`;
+}
+
 export function resolvePublishedGoogleChatEndpoint(input: {
   requestUrl?: string | null;
   forwardedHost?: string | null;
   forwardedProto?: string | null;
 }) {
-  const explicitAudience = process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim();
-  if (explicitAudience) {
-    const url = new URL(explicitAudience);
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  }
-
   const publicAppUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
   if (publicAppUrl) {
     return buildGoogleChatEndpointUrl(publicAppUrl);
@@ -103,6 +99,8 @@ export function resolvePublishedGoogleChatEndpoint(input: {
 }
 
 export function getGoogleChatAuthAudience(requestUrl: string) {
+  const configured = process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim();
+  if (configured) return configured;
   return resolvePublishedGoogleChatEndpoint({ requestUrl });
 }
 
@@ -111,17 +109,6 @@ export async function verifyGoogleChatRequest(input: {
   legacyToken: string | null;
   requestUrl: string;
 }): Promise<GoogleChatVerificationResult> {
-  const bearerToken = extractBearerToken(input.authorizationHeader);
-  if (bearerToken) {
-    const audience = getGoogleChatAuthAudience(input.requestUrl);
-    const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audience);
-    return {
-      ...bearerResult,
-      mode: "bearer",
-      audience,
-    };
-  }
-
   const expectedLegacyToken = process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim();
   if (expectedLegacyToken) {
     return verifyGoogleChatToken(input.legacyToken, expectedLegacyToken)
@@ -132,6 +119,17 @@ export async function verifyGoogleChatRequest(input: {
           audience: null,
           error: "Token de verificação do Google Chat inválido.",
         };
+  }
+
+  const bearerToken = extractBearerToken(input.authorizationHeader);
+  if (bearerToken) {
+    const audience = getGoogleChatAuthAudience(input.requestUrl);
+    const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audience);
+    return {
+      ...bearerResult,
+      mode: "bearer",
+      audience,
+    };
   }
 
   if (process.env.NODE_ENV !== "production") {

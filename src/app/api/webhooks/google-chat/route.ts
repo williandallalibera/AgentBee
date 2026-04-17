@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { wait } from "@trigger.dev/sdk/v3";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
-  getGoogleChatAuthAudience,
   resolvePublishedGoogleChatEndpoint,
   verifyGoogleChatRequest,
 } from "@/lib/integrations/google-chat";
@@ -28,15 +27,15 @@ export async function GET(request: Request) {
     forwardedHost: request.headers.get("x-forwarded-host"),
     forwardedProto: request.headers.get("x-forwarded-proto"),
   });
+  const legacyTokenConfigured = Boolean(process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim());
 
   return NextResponse.json({
     ok: true,
     provider: "google_chat",
+    auth_mode: legacyTokenConfigured ? "legacy_token" : "bearer_fallback",
     endpoint_url: endpointUrl,
     verification: {
-      bearer_auth_supported: true,
-      legacy_token_configured: Boolean(process.env.GOOGLE_CHAT_VERIFICATION_TOKEN),
-      audience: getGoogleChatAuthAudience(endpointUrl),
+      legacy_token_configured: legacyTokenConfigured,
     },
   });
 }
