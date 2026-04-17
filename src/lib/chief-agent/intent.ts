@@ -74,7 +74,25 @@ export function classifyChiefIntent(message: string): ChiefIntent {
     };
   }
 
-  if (/proximas?\s+postagens|calend[aá]rio|agenda/i.test(t)) {
+  /**
+   * Listar o que **já está** agendado no calendário — não confundir com pedidos de
+   * sugestão/planejamento ("calendário de sugestão", "gerar sugestões"), que devem
+   * ir ao modelo como `generate_calendar` ou conversa.
+   */
+  if (
+    /\b(sugest(ão|ões)|gerar\s+.{0,24}sugest|preencher\s+.{0,24}calend)/i.test(t) ||
+    /\bcalend[aá]rio\s+de\s+sugest/i.test(t) ||
+    /\b(planej|planeje|planege|elabore)\s+.{0,120}\bcampanhas?\b/i.test(t)
+  ) {
+    return { kind: "unknown" };
+  }
+
+  if (
+    /pr[oó]ximas?\s+postagens/i.test(t) ||
+    /\bpostagens?\s+(agendadas|programadas|marcadas)\b/i.test(t) ||
+    /\bo que\s+(tem|está|ta)\s+(no|na|pra|para)\s+(calend[aá]rio|agenda)\b/i.test(t) ||
+    /\b(ver|mostrar?|mostre|lista(r)?)\s+(o\s+)?(calend[aá]rio|agenda)(\s+de)?\s+(post|publica)/i.test(t)
+  ) {
     return { kind: "upcoming_posts" };
   }
 

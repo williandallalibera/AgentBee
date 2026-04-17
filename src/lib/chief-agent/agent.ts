@@ -430,9 +430,17 @@ export async function planChiefAgentResponse(input: {
   const key = input.apiKey ?? process.env.OPENAI_API_KEY;
 
   const looksLikeCreateCampaign =
-    /\b(crie|criar|monte|montar|planeje|planejar|elabore|elaborar|inicie|iniciar|fa(ç|c)a uma campanha|fazer uma campanha|vamos criar uma campanha|nova campanha)\b/i.test(
+    /\b(crie|criar|monte|montar|planeje|planege|planejar|elabore|elaborar|inicie|iniciar|fa(ç|c)a uma campanha|fazer uma campanha|vamos criar uma campanha|nova campanha)\b/i.test(
       input.text,
     ) && /\bcampanhas?\b/i.test(input.text);
+
+  /** Pedido explícito de sugestões no calendário (evita cair só em "próximas postagens"). */
+  const looksLikeGenerateCalendar =
+    /\bcalend[aá]rio\s+de\s+sugest/i.test(input.text) ||
+    /\b(gerar|monte|crie)\s+.{0,40}(sugest(ão|ões)|slots).{0,40}(calend|agenda)/i.test(
+      input.text,
+    ) ||
+    /\bsugest(ão|ões)\s+(de\s+)?(post|publica)/i.test(input.text);
 
   const looksLikeOperations =
     /\b(gerar|gera|sugest|preench|enche)\s+.{0,40}(calend|agenda)/i.test(input.text) ||
@@ -448,7 +456,10 @@ export async function planChiefAgentResponse(input: {
     /\b(cancelar|cancela)\s+(?:a\s+)?(?:task\s+)?([a-f0-9-]{8,})/i.test(input.text) ||
     /\b(cancelar|cancela)\s+(?:o\s+)?fluxo/i.test(input.text);
 
-  if (!key && (looksLikeCreateCampaign || looksLikeOperations || looksLikeCancel)) {
+  if (
+    !key &&
+    (looksLikeCreateCampaign || looksLikeGenerateCalendar || looksLikeOperations || looksLikeCancel)
+  ) {
     return {
       ...fallback,
       intent: "chat",
@@ -465,6 +476,7 @@ export async function planChiefAgentResponse(input: {
     (fallback.intent === "chat" ||
       fallback.intent === "help" ||
       looksLikeCreateCampaign ||
+      looksLikeGenerateCalendar ||
       looksLikeOperations ||
       looksLikeCancel);
   if (!useLlm) {
