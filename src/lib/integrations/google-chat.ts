@@ -174,7 +174,14 @@ export async function verifyGoogleChatRequest(input: {
   };
 }
 
-async function verifyGoogleChatBearerToken(token: string, audience: string) {
+type GoogleChatBearerVerificationResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+async function verifyGoogleChatBearerToken(
+  token: string,
+  audience: string,
+): Promise<GoogleChatBearerVerificationResult> {
   try {
     const { payload } = await jwtVerify(token, GOOGLE_OIDC_JWKS, {
       audience,
@@ -208,7 +215,10 @@ async function verifyGoogleChatBearerToken(token: string, audience: string) {
   };
 }
 
-async function verifyProjectNumberJwt(token: string, audience: string) {
+async function verifyProjectNumberJwt(
+  token: string,
+  audience: string,
+): Promise<GoogleChatBearerVerificationResult> {
   try {
     const header = decodeProtectedHeader(token);
     if (!header.kid || typeof header.kid !== "string") {
