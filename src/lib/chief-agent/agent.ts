@@ -66,6 +66,17 @@ type CalendarRow = {
   content_task_id: string | null;
 };
 
+type PlaybookRow = {
+  content_markdown: string;
+};
+
+type CampaignRow = {
+  id: string;
+  name: string;
+  status: string;
+  objective: string | null;
+};
+
 type ConversationRow = {
   message_text: string;
   intent: string | null;
@@ -81,6 +92,7 @@ export type ChiefAgentPlanIntent =
   | "chat"
   | "pending_approvals"
   | "task_status"
+  | "campaign_status"
   | "upcoming_posts"
   | "approve_task"
   | "reject_task"
@@ -126,6 +138,14 @@ export type ChiefAgentSnapshot = {
     title: string;
     status: string;
     taskId: string | null;
+  }>;
+  /** Trecho do playbook do workspace para contexto do agente (pode ser vazio). */
+  playbookExcerpt: string;
+  recentCampaigns: Array<{
+    id: string;
+    name: string;
+    status: string;
+    objective: string | null;
   }>;
 };
 
@@ -203,16 +223,56 @@ export async function loadChiefAgentSnapshot(
   supabase: Queryable,
   workspaceId: string,
 ): Promise<ChiefAgentSnapshot> {
-  const { data: tasksData } = await supabase
-    .from("content_tasks")
-    .select("id, title, status, current_stage, updated_at")
-    .eq("workspace_id", workspaceId)
-    .order("updated_at", { ascending: false })
-    .limit(50);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [
+    { data: tasksData },
+    { data: playbookDocs },
+    { data: brandRows },
+    { data: calendarData },
+  ] = await Promise.all([
+    supabase
+      .from("content_tasks")
+      .select("id, title, status, current_stage, updated_at")
+      .eq("workspace_id", workspaceId)
+      .order("updated_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("playbook_documents")
+      .select("content_markdown")
+      .eq("workspace_id", workspaceId)
+      .order("updated_at", { ascending: false })
+      .limit(5),
+    supabase.from("brands").select("id").eq("workspace_id", workspaceId),
+    supabase
+      .from("calendar_items")
+      .select("id, planned_date, topic_title, topic, status, content_task_id")
+      .eq("workspace_id", workspaceId)
+      .gte("planned_date", today)
+      .order("planned_date", { ascending: true })
+      .limit(12),
+  ]);
 
   const tasks = (tasksData ?? []) as TaskRow[];
   const taskIds = tasks.map((task) => task.id);
   const taskMap = new Map(tasks.map((task) => [task.id, task]));
+
+  const brandIds = (brandRows ?? []).map((row: { id: string }) => row.id);
+  let campaignsData: CampaignRow[] = [];
+  if (brandIds.length > 0) {
+    const { data: campRows } = await supabase
+      .from("campaigns")
+      .select("id, name, status, objective")
+      .in("brand_id", brandIds)
+      .order("created_at", { ascending: false })
+      .limit(12);
+    campaignsData = (campRows ?? []) as CampaignRow[];
+  }
+
+  const playbookExcerpt = ((playbookDocs ?? []) as PlaybookRow[])
+    .map((row) => row.content_markdown)
+    .join("\n\n")
+    .slice(0, 8000);
 
   let pendingApprovals: ApprovalRow[] = [];
   if (taskIds.length > 0) {
@@ -225,15 +285,6 @@ export async function loadChiefAgentSnapshot(
       .limit(12);
     pendingApprovals = (approvalsData ?? []) as ApprovalRow[];
   }
-
-  const today = new Date().toISOString().slice(0, 10);
-  const { data: calendarData } = await supabase
-    .from("calendar_items")
-    .select("id, planned_date, topic_title, topic, status, content_task_id")
-    .eq("workspace_id", workspaceId)
-    .gte("planned_date", today)
-    .order("planned_date", { ascending: true })
-    .limit(12);
 
   const calendarItems = (calendarData ?? []) as CalendarRow[];
 
@@ -272,6 +323,13 @@ export async function loadChiefAgentSnapshot(
         status: item.status,
         taskId: item.content_task_id,
       })),
+    playbookExcerpt,
+    recentCampaigns: campaignsData.map((c) => ({
+      id: c.id,
+      name: c.name,
+      status: c.status,
+      objective: c.objective ?? null,
+    })),
   };
 }
 
@@ -314,25 +372,30 @@ export async function planChiefAgentResponse(input: {
   model?: string | null;
 }): Promise<ChiefAgentPlan> {
   const fallback = fallbackChiefAgentPlan(input.text, input.snapshot);
-  if (fallback.intent !== "chat" || fallback.confidence !== "low") {
-    return fallback;
-  }
   const key = input.apiKey ?? process.env.OPENAI_API_KEY;
-  if (!key) {
+  if (fallback.intent !== "chat" || !key) {
     return fallback;
   }
+
+  const playbookHint =
+    input.snapshot.playbookExcerpt.trim().length > 0
+      ? " Use o trecho de playbook fornecido como referência de tom, voz e diretrizes quando fizer sentido; não invente fatos que não estejam no playbook nem no snapshot."
+      : "";
 
   const prompt = [
     "Você é o Agente Chefe do AgentBee, atuando em um grupo interno do Google Chat.",
     "Fale sempre em português do Brasil, em tom humano, objetivo, cordial e operacional.",
     "Você pode conversar naturalmente, responder dúvidas do time e executar ações operacionais quando a instrução estiver clara.",
-    "Ações permitidas: listar aprovações pendentes, resumir status de tarefas, listar próximas postagens, aprovar task, reprovar task, reagendar item do calendário.",
+    "Ações permitidas: listar aprovações pendentes, resumir status de tarefas, resumir campanhas, listar próximas postagens, aprovar task, reprovar task, reagendar item do calendário.",
     "Só escolha aprovar/reprovar/reagendar quando o pedido estiver explícito e o alvo estiver claro nos dados.",
     "Nunca invente IDs, datas, aprovações, tarefas ou status.",
     "Se faltar contexto para agir, responda pedindo confirmação ou esclarecimento.",
     "Se a mensagem for apenas social ou aberta, responda como um gerente operacional útil usando os dados fornecidos.",
+    playbookHint,
     "Retorne somente JSON válido.",
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const body = {
     model:
@@ -358,10 +421,11 @@ export async function planChiefAgentResponse(input: {
               created_at: turn.createdAt,
             })),
             workspace_snapshot: input.snapshot,
+            playbook_excerpt: input.snapshot.playbookExcerpt || null,
             instructions: {
               response_shape: {
                 intent:
-                  "chat | pending_approvals | task_status | upcoming_posts | approve_task | reject_task | reschedule_item | help | ignore",
+                  "chat | pending_approvals | task_status | campaign_status | upcoming_posts | approve_task | reject_task | reschedule_item | help | ignore",
                 reply: "string",
                 taskId: "string|null",
                 itemId: "string|null",
@@ -456,6 +520,19 @@ export function formatUpcomingPostsReply(snapshot: ChiefAgentSnapshot) {
     .join("\n")}`;
 }
 
+export function formatCampaignStatusReply(snapshot: ChiefAgentSnapshot) {
+  if (snapshot.recentCampaigns.length === 0) {
+    return "Ainda não há campanhas cadastradas neste workspace.";
+  }
+
+  const lines = snapshot.recentCampaigns.map((c) => {
+    const obj = c.objective ? ` — ${c.objective}` : "";
+    return `• ${c.name} — ${c.status}${obj}`;
+  });
+
+  return `Campanhas:\n${lines.join("\n")}`;
+}
+
 export function formatHelpReply() {
   return [
     "Posso agir como chefe operacional aqui no grupo.",
@@ -486,6 +563,18 @@ function fallbackChiefAgentPlan(
       date: null,
       comments: null,
       confidence: "medium",
+    };
+  }
+
+  if (/\bcampanha/i.test(normalized)) {
+    return {
+      intent: "campaign_status",
+      reply: formatCampaignStatusReply(snapshot),
+      taskId: null,
+      itemId: null,
+      date: null,
+      comments: null,
+      confidence: "high",
     };
   }
 
@@ -532,6 +621,16 @@ function fallbackChiefAgentPlan(
       return {
         intent: "task_status",
         reply: formatTaskStatusReply(snapshot),
+        taskId: null,
+        itemId: null,
+        date: null,
+        comments: null,
+        confidence: "high",
+      };
+    case "campaign_status":
+      return {
+        intent: "campaign_status",
+        reply: formatCampaignStatusReply(snapshot),
         taskId: null,
         itemId: null,
         date: null,
@@ -614,6 +713,7 @@ function normalizeChiefAgentPlan(
     "chat",
     "pending_approvals",
     "task_status",
+    "campaign_status",
     "upcoming_posts",
     "approve_task",
     "reject_task",

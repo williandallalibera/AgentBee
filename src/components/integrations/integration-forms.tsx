@@ -200,6 +200,34 @@ export function IntegrationForms({
             endpoint no app do Google Chat. O webhook do espaço abaixo é opcional e serve só para
             alertas enviados pelo AgentBee.
           </p>
+          <details className="rounded-md border border-gray-200 bg-muted/40 p-3 text-xs dark:border-gray-600">
+            <summary className="cursor-pointer font-medium text-gray-900 dark:text-white">
+              Não está funcionando? Veja qual situação é a sua (A, B ou C)
+            </summary>
+            <ul className="mt-2 list-disc space-y-2 pl-4 text-gray-600 dark:text-gray-300">
+              <li>
+                <strong>A — O bot não responde no Chat</strong> (nem erro visível): confira no Google
+                Cloud se a URL do app bate com o deploy, se o{" "}
+                <code className="rounded bg-muted px-1">?token=</code> é o valor completo de{" "}
+                <code className="rounded bg-muted px-1">GOOGLE_CHAT_VERIFICATION_TOKEN</code>, se o
+                app recebe eventos de mensagem e, em espaços, se você{" "}
+                <strong>menciona o bot</strong> (@…). Testar o endpoint no navegador só mostra que o
+                servidor está no ar; quem envia mensagens ao grupo é o Google após você falar com o
+                bot.
+              </li>
+              <li>
+                <strong>B — Só faltam avisos automáticos</strong> (pipeline, lembretes): preencha o
+                campo <strong>Webhook do espaço</strong> abaixo com a URL do espaço no Google Chat e
+                garanta que existam tarefas/triggers que disparem esses envios.
+              </li>
+              <li>
+                <strong>C — O bot responde, mas parece genérico</strong>: isso costuma ser falta de
+                dados operacionais (tarefas, calendário, aprovações) ou expectativa de usar o
+                playbook no chat — o playbook entra nas respostas do agente quando há integração
+                OpenAI e dados carregados no workspace.
+              </li>
+            </ul>
+          </details>
           <Label htmlFor="gc-auth-mode">Modo de autenticação</Label>
           <Input id="gc-auth-mode" value="Token de verificação" readOnly disabled />
           <Label htmlFor="gc-token-status">Status do token</Label>

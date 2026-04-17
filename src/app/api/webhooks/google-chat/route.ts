@@ -11,6 +11,7 @@ import {
   formatPendingApprovalsReply,
   formatTaskStatusReply,
   formatUpcomingPostsReply,
+  formatCampaignStatusReply,
   loadChiefAgentSnapshot,
   loadChiefConversationHistory,
   planChiefAgentResponse,
@@ -29,6 +30,8 @@ export async function GET(request: Request) {
     forwardedProto: request.headers.get("x-forwarded-proto"),
   });
   const legacyTokenConfigured = Boolean(process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim());
+  const bearerAudienceConfigured = Boolean(process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim());
+  const publicAppUrlConfigured = Boolean(process.env.NEXT_PUBLIC_APP_URL?.trim());
 
   return NextResponse.json({
     ok: true,
@@ -37,6 +40,18 @@ export async function GET(request: Request) {
     endpoint_url: endpointUrl,
     verification: {
       legacy_token_configured: legacyTokenConfigured,
+      bearer_audience_configured: bearerAudienceConfigured,
+    },
+    deploy_hints: {
+      next_public_app_url_configured: publicAppUrlConfigured,
+    },
+    troubleshooting: {
+      A_bot_not_replying:
+        "Confira URL + token no Google Cloud, eventos de mensagem e menção ao bot em espaços. GET nesta URL só valida que o app está no ar.",
+      B_outbound_only:
+        "Alertas automáticos usam o webhook do espaço em Integrações (não este endpoint).",
+      C_generic_replies:
+        "Respostas usam dados do workspace (tarefas, calendário) e playbook quando configurados.",
     },
   });
 }
@@ -193,6 +208,8 @@ async function executeChiefAgentPlan(input: {
       return formatTaskStatusReply(input.snapshot);
     case "upcoming_posts":
       return formatUpcomingPostsReply(input.snapshot);
+    case "campaign_status":
+      return formatCampaignStatusReply(input.snapshot);
     case "help":
       return formatHelpReply();
     case "approve_task":
