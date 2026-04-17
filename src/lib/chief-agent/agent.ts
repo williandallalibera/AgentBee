@@ -1,4 +1,5 @@
 import { classifyChiefIntent } from "@/lib/chief-agent/intent";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type GoogleChatEventPayload = {
   type?: string;
@@ -70,7 +71,7 @@ type ConversationRow = {
 };
 
 type Queryable = {
-  from: (table: string) => any;
+  from: SupabaseClient["from"];
 };
 
 export type ChiefAgentPlanIntent =

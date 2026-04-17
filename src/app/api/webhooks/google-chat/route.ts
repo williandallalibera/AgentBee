@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { wait } from "@trigger.dev/sdk/v3";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
+  buildGoogleChatEndpointUrl,
+  getGoogleChatAuthAudience,
+  verifyGoogleChatRequest,
+} from "@/lib/integrations/google-chat";
+import {
   captureObservedGoogleChatSpace,
   formatHelpReply,
   formatPendingApprovalsReply,
@@ -17,6 +22,21 @@ import {
 /**
  * Webhook Google Chat — recebe eventos interativos do app e responde em tempo real.
  */
+export async function GET(request: Request) {
+  const endpointUrl = buildGoogleChatEndpointUrl(new URL(request.url).origin);
+
+  return NextResponse.json({
+    ok: true,
+    provider: "google_chat",
+    endpoint_url: endpointUrl,
+    verification: {
+      bearer_auth_supported: true,
+      legacy_token_configured: Boolean(process.env.GOOGLE_CHAT_VERIFICATION_TOKEN),
+      audience: getGoogleChatAuthAudience(endpointUrl),
+    },
+  });
+}
+
 export async function POST(request: Request) {
   let payload: GoogleChatEventPayload;
   try {
@@ -25,13 +45,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ text: "Payload inválido." });
   }
 
-  const expected = process.env.GOOGLE_CHAT_VERIFICATION_TOKEN;
   const token =
     request.headers.get("x-goog-chat-token") ??
     new URL(request.url).searchParams.get("token") ??
-    payload.token;
-  if (expected && token !== expected) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    payload.token ??
+    null;
+  const verification = await verifyGoogleChatRequest({
+    authorizationHeader: request.headers.get("authorization"),
+    legacyToken: token,
+    requestUrl: request.url,
+  });
+  if (!verification.ok) {
+    return NextResponse.json(
+      { error: verification.error ?? "Unauthorized" },
+      { status: verification.mode === "bearer" ? 401 : 403 },
+    );
   }
 
   if (payload.type === "REMOVED_FROM_SPACE") {
