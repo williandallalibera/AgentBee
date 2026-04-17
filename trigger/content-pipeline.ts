@@ -71,6 +71,17 @@ export const contentPipeline = task({
 
     const wsId = taskRow.workspace_id as string;
 
+    const { data: gcIntegration } = await supabase
+      .from("integrations")
+      .select("config_metadata_json")
+      .eq("workspace_id", wsId)
+      .eq("provider", "google_chat")
+      .maybeSingle();
+
+    const googleChatWebhook = (
+      gcIntegration?.config_metadata_json as { webhook_url?: string } | null
+    )?.webhook_url;
+
     const { data: playbookDocs } = await supabase
       .from("playbook_documents")
       .select("content_markdown")
@@ -176,18 +187,8 @@ export const contentPipeline = task({
       .update({ wait_token_id: token1.id })
       .eq("id", approval1.id);
 
-    const { data: gc } = await supabase
-      .from("integrations")
-      .select("config_metadata_json")
-      .eq("workspace_id", wsId)
-      .eq("provider", "google_chat")
-      .maybeSingle();
-
-    const webhook = (gc?.config_metadata_json as { webhook_url?: string } | null)
-      ?.webhook_url;
-
-    if (webhook) {
-      await sendGoogleChatMessage(webhook, {
+    if (googleChatWebhook) {
+      await sendGoogleChatMessage(googleChatWebhook, {
         title: "Preciso de uma revisão rápida da direção desta peça",
         subtitle: taskRow.title,
         lines: [
@@ -236,6 +237,13 @@ export const contentPipeline = task({
         actorType: "user",
         actorId: null,
       });
+      if (googleChatWebhook) {
+        await sendGoogleChatMessage(googleChatWebhook, {
+          title: "Tarefa cancelada na aprovação inicial",
+          subtitle: taskRow.title,
+          lines: [`Task ${payload.taskId}`, "Fluxo encerrado."],
+        });
+      }
       return { ok: false, phase: "initial_cancelled" };
     }
 
@@ -255,6 +263,16 @@ export const contentPipeline = task({
             blocked_reason: "Nova direção solicitada na aprovação inicial",
           })
           .eq("id", taskRow.calendar_item_id);
+      }
+      if (googleChatWebhook) {
+        await sendGoogleChatMessage(googleChatWebhook, {
+          title: "Ajuste pedido na direção inicial",
+          subtitle: taskRow.title,
+          lines: [
+            firstResult.comments ? `Feedback: ${firstResult.comments}` : "Solicitaram ajuste na proposta.",
+            `Task ${payload.taskId} — acompanhem no painel ou peçam novo status aqui.`,
+          ],
+        });
       }
       return { ok: false, phase: "needs_revision", comments: firstResult.comments };
     }
@@ -345,8 +363,8 @@ export const contentPipeline = task({
       .update({ wait_token_id: token2.id })
       .eq("id", approval2.id);
 
-    if (webhook) {
-      await sendGoogleChatMessage(webhook, {
+    if (googleChatWebhook) {
+      await sendGoogleChatMessage(googleChatWebhook, {
         title: "Versão final pronta para aprovação",
         subtitle: taskRow.title,
         lines: [
@@ -378,6 +396,13 @@ export const contentPipeline = task({
           .update({ status: "cancelled", blocked_reason: "Cancelado na aprovação final" })
           .eq("id", taskRow.calendar_item_id);
       }
+      if (googleChatWebhook) {
+        await sendGoogleChatMessage(googleChatWebhook, {
+          title: "Tarefa cancelada na aprovação final",
+          subtitle: taskRow.title,
+          lines: [`Task ${payload.taskId}`, "Fluxo encerrado."],
+        });
+      }
       return { ok: false, phase: "final_cancelled" };
     }
 
@@ -398,6 +423,18 @@ export const contentPipeline = task({
             blocked_reason: "Ajustes solicitados na aprovação final",
           })
           .eq("id", taskRow.calendar_item_id);
+      }
+      if (googleChatWebhook) {
+        await sendGoogleChatMessage(googleChatWebhook, {
+          title: "Ajuste pedido na versão final",
+          subtitle: taskRow.title,
+          lines: [
+            secondResult.comments
+              ? `Feedback: ${secondResult.comments}`
+              : "Solicitaram ajuste na peça final.",
+            `Task ${payload.taskId}`,
+          ],
+        });
       }
       return { ok: false, phase: "final_needs_revision" };
     }
@@ -435,6 +472,7 @@ export const contentPipeline = task({
       ? `${calendarItem.planned_date}T09:00:00.000Z`
       : null;
 
+    /** Publicação interna (fila). Integração real com APIs Instagram/LinkedIn é etapa posterior ao fluxo estável no chat. */
     await supabase.from("publications").insert({
       task_id: payload.taskId,
       channel_type: calendarItem?.channel_type ?? "instagram",
@@ -468,6 +506,20 @@ export const contentPipeline = task({
       actorType: "system",
       actorId: "content-pipeline",
     });
+
+    if (googleChatWebhook) {
+      await sendGoogleChatMessage(googleChatWebhook, {
+        title: "Peça aprovada e agendada",
+        subtitle: taskRow.title,
+        lines: [
+          `Task ${payload.taskId}`,
+          calendarItem?.planned_date
+            ? `Data planejada no calendário: ${calendarItem.planned_date} (${calendarItem.channel_type ?? "canal"}).`
+            : "Sem data no calendário — revisem no painel.",
+          "Publicação na fila interna; integração direta com redes sociais quando estiver configurada.",
+        ],
+      });
+    }
 
     return { ok: true, taskId: payload.taskId };
   },

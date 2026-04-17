@@ -18,6 +18,12 @@ import {
   formatTaskStatusReply,
   formatUpcomingPostsReply,
   formatCampaignStatusReply,
+  executeCampaignLifecycleFromChief,
+  executeCreateCampaignFromChief,
+  executeCreateTaskFromChief,
+  executeGenerateCalendarFromChief,
+  executeStartTaskFromChief,
+  formatTaskDetailReplyFromChief,
   loadChiefAgentSnapshot,
   loadChiefConversationHistory,
   planChiefAgentResponse,
@@ -73,7 +79,7 @@ export async function GET(request: Request) {
       forwardedHost: request.headers.get("x-forwarded-host"),
       forwardedProto: request.headers.get("x-forwarded-proto"),
     }),
-    workspace_addon_message_format: shouldUseWorkspaceAddonResponseFormat({})
+    workspace_addon_message_format: shouldUseWorkspaceAddonResponseFormat()
       ? "workspace_addon_hostAppDataAction (padrão)"
       : "chat_api_plain_text — defina assim com GOOGLE_CHAT_WORKSPACE_ADDON=false",
   });
@@ -85,7 +91,7 @@ export async function POST(request: Request) {
     rawBody = await request.json();
   } catch {
     console.warn("google_chat_post_invalid_json");
-    const addonFmt = shouldUseWorkspaceAddonResponseFormat({});
+    const addonFmt = shouldUseWorkspaceAddonResponseFormat();
     return NextResponse.json(
       addonFmt
         ? workspaceAddonCreateTextMessage("Payload inválido.")
@@ -93,7 +99,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const useAddonResponse = shouldUseWorkspaceAddonResponseFormat(rawBody);
+  const useAddonResponse = shouldUseWorkspaceAddonResponseFormat();
   const payload = normalizeChatWebhookPayload(rawBody) as GoogleChatEventPayload;
 
   const jsonMessage = (text: string, init?: ResponseInit) =>
@@ -243,6 +249,12 @@ export async function POST(request: Request) {
       snapshot,
     });
 
+    console.info("google_chat_reply_sent", {
+      workspaceId,
+      intent: plan.intent,
+      thread: Boolean(externalThreadId),
+    });
+
     await supabase.from("chief_agent_conversations").insert({
       workspace_id: workspaceId,
       external_channel: "google_chat",
@@ -294,6 +306,13 @@ async function executeChiefAgentPlan(input: {
         decision: "revision",
         comments: input.plan.comments,
       });
+    case "cancel_task":
+      return await cancelPendingApprovalFromGoogleChat({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        taskId: input.plan.taskId,
+        comments: input.plan.comments,
+      });
     case "reschedule_item":
       return await rescheduleCalendarItemFromGoogleChat({
         supabase: input.supabase,
@@ -301,12 +320,169 @@ async function executeChiefAgentPlan(input: {
         itemId: input.plan.itemId,
         date: input.plan.date,
       });
+    case "create_campaign": {
+      if (!input.plan.campaignDraft) {
+        return input.plan.reply;
+      }
+      const created = await executeCreateCampaignFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.plan.campaignDraft,
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${created}` : created;
+    }
+    case "generate_calendar": {
+      const p = input.plan.generateCalendarParams ?? {
+        weeksAhead: 4,
+        postsPerWeek: 2,
+        campaignId: null,
+      };
+      const out = await executeGenerateCalendarFromChief(
+        input.supabase,
+        input.workspaceId,
+        p,
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${out}` : out;
+    }
+    case "start_task": {
+      if (!input.plan.itemId) return input.plan.reply;
+      const out = await executeStartTaskFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.plan.itemId,
+        input.plan.startTaskTriggerPipeline !== false,
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${out}` : out;
+    }
+    case "create_task": {
+      if (!input.plan.createTaskParams) return input.plan.reply;
+      const out = await executeCreateTaskFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.plan.createTaskParams,
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${out}` : out;
+    }
+    case "pause_campaign": {
+      if (!input.plan.targetCampaignId) return input.plan.reply;
+      const out = await executeCampaignLifecycleFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.plan.targetCampaignId,
+        "pause",
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${out}` : out;
+    }
+    case "resume_campaign": {
+      if (!input.plan.targetCampaignId) return input.plan.reply;
+      const out = await executeCampaignLifecycleFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.plan.targetCampaignId,
+        "resume",
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${out}` : out;
+    }
+    case "task_detail": {
+      if (!input.plan.taskId) return input.plan.reply;
+      const detail = await formatTaskDetailReplyFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.plan.taskId,
+      );
+      const head = input.plan.reply?.trim() ?? "";
+      return head.length > 0 ? `${head}\n\n${detail}` : detail;
+    }
     case "ignore":
       return "Fico por aqui se precisarem de mim.";
     case "chat":
     default:
       return input.plan.reply;
   }
+}
+
+/**
+ * Cancela o fluxo no ponto de espera do Trigger (equivalente a «Cancelar» no painel de aprovações).
+ * O `content-pipeline` atualiza task/calendário ao consumir o token com action cancel.
+ */
+async function cancelPendingApprovalFromGoogleChat(input: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  workspaceId: string;
+  taskId: string | null;
+  comments: string | null;
+}): Promise<string> {
+  if (!input.taskId) {
+    return "Preciso que você indique a task certa para eu agir.";
+  }
+
+  const { data: task } = await input.supabase
+    .from("content_tasks")
+    .select("id, title, workspace_id")
+    .eq("id", input.taskId)
+    .maybeSingle();
+
+  if (!task || task.workspace_id !== input.workspaceId) {
+    return "Não encontrei essa task no workspace atual.";
+  }
+
+  const { data: approval } = await input.supabase
+    .from("approvals")
+    .select("id, wait_token_id, approval_type")
+    .eq("task_id", task.id)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!approval) {
+    return `Não há aprovação pendente para «${task.title}». Só consigo cancelar o fluxo quando o pipeline está aguardando decisão (como no painel).`;
+  }
+
+  if (!process.env.TRIGGER_SECRET_KEY) {
+    return "TRIGGER_SECRET_KEY não está configurada, então eu não consigo cancelar o fluxo por aqui.";
+  }
+
+  if (!approval.wait_token_id) {
+    return "A aprovação pendente não tem wait token. Parece um fluxo antigo ou incompleto.";
+  }
+
+  const decisionComments = input.comments?.trim() || "Cancelado via Google Chat";
+
+  await wait.completeToken(approval.wait_token_id, {
+    action: "cancel",
+    comments: decisionComments,
+  });
+
+  await input.supabase
+    .from("approvals")
+    .update({
+      status: "cancelled",
+      channel_type: "google_chat",
+      comments: decisionComments,
+      responded_at: new Date().toISOString(),
+    })
+    .eq("id", approval.id);
+
+  await input.supabase.from("audit_logs").insert({
+    workspace_id: input.workspaceId,
+    entity_type: "content_task",
+    entity_id: task.id,
+    action: "cancelled_via_google_chat",
+    actor_type: "system",
+    actor_id: "google-chat-webhook",
+    metadata_json: {
+      approval_type: approval.approval_type,
+      comments: decisionComments,
+    },
+  });
+
+  return `Fluxo cancelado para «${task.title}» (task ${task.id}).`;
 }
 
 async function applyApprovalDecisionFromGoogleChat(input: {

@@ -315,7 +315,3 @@ function extractBearerToken(authorizationHeader: string | null) {
   return value.trim() || null;
 }
 
-function combineGoogleChatErrors(first: unknown, second: string) {
-  const firstMessage = first instanceof Error ? first.message : "Falha ao validar ID token.";
-  return `${firstMessage} ${second}`.trim();
-}

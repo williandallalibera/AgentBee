@@ -11,7 +11,7 @@ import type { GoogleChatEventPayload } from "@/lib/chief-agent/agent";
  * raiz quebra o runtime de add-on ("Cannot find field: text in ... RenderActions").
  * App **somente** Chat API HTTP (sem add-on): `GOOGLE_CHAT_WORKSPACE_ADDON=false`.
  */
-export function shouldUseWorkspaceAddonResponseFormat(_payload: unknown): boolean {
+export function shouldUseWorkspaceAddonResponseFormat(): boolean {
   return process.env.GOOGLE_CHAT_WORKSPACE_ADDON?.trim() !== "false";
 }
 

@@ -1,5 +1,6 @@
 "use server";
 
+import { createContentTaskCore } from "@/lib/content/create-task-core";
 import { requireWorkspaceMember } from "@/lib/auth/session";
 import { revalidatePath } from "next/cache";
 
@@ -19,20 +20,14 @@ export async function createContentTask(input: {
 }) {
   const { supabase, user, workspaceId } = await requireWorkspaceMember();
 
-  const { data, error } = await supabase
-    .from("content_tasks")
-    .insert({
-      workspace_id: workspaceId,
-      title: input.title,
-      campaign_id: input.campaignId ?? null,
-      status: "draft",
-      requested_by: user.id,
-      current_stage: "briefing",
-    })
-    .select("id")
-    .single();
+  const result = await createContentTaskCore(supabase, {
+    workspaceId,
+    title: input.title,
+    campaignId: input.campaignId ?? null,
+    requestedByUserId: user.id,
+  });
 
-  if (error) return { error: error.message };
+  if ("error" in result) return result;
   revalidatePath("/content");
-  return { id: data.id };
+  return { id: result.taskId };
 }
