@@ -219,7 +219,11 @@ export function IntegrationForms({
           />
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Cole aqui exatamente o endpoint configurado no Google Chat, por exemplo{" "}
-            {effectiveGoogleChatLegacyEndpoint}. O endpoint base detectado do bot hoje é{" "}
+            {effectiveGoogleChatLegacyEndpoint}. O parâmetro{" "}
+            <code className="rounded bg-muted px-1">?token=...</code> deve ser o valor{" "}
+            <strong>inteiro</strong> de <code className="rounded bg-muted px-1">GOOGLE_CHAT_VERIFICATION_TOKEN</code>{" "}
+            no Firebase (mesmo valor do Google Cloud → Chat API → verificação). Se o token estiver
+            truncado ou diferente, o bot não responde no chat. Endpoint base detectado hoje:{" "}
             {effectiveGoogleChatEndpointBase}.
           </p>
           <Label htmlFor="gc">Webhook do espaço (opcional)</Label>

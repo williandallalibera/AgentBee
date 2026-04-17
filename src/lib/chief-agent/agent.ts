@@ -19,7 +19,10 @@ export type GoogleChatEventPayload = {
   message?: {
     name?: string;
     text?: string;
+    /** Texto sem a menção ao bot (Google Chat). */
     argumentText?: string;
+    /** Texto formatado com menções `<users/...>`. */
+    formattedText?: string;
     thread?: {
       name?: string;
     };
@@ -704,4 +707,25 @@ function matchesGoogleChatSpace(
 function readConfigString(config: Record<string, unknown>, key: string) {
   const value = config[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function stripGoogleChatMentions(raw: string) {
+  return raw
+    .replace(/<users\/[^>]+>/g, "")
+    .replace(/<space\/[^>]+>/g, "")
+    .trim();
+}
+
+/** Texto enviado pelo usuário no Google Chat (menções removidas quando necessário). */
+export function extractIncomingText(payload: GoogleChatEventPayload) {
+  const arg = payload.message?.argumentText?.trim();
+  if (arg) return arg;
+
+  const text = payload.message?.text?.trim();
+  if (text) return stripGoogleChatMentions(text);
+
+  const formatted = payload.message?.formattedText?.trim();
+  if (formatted) return stripGoogleChatMentions(formatted);
+
+  return "";
 }

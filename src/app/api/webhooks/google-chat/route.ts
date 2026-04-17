@@ -14,6 +14,7 @@ import {
   loadChiefAgentSnapshot,
   loadChiefConversationHistory,
   planChiefAgentResponse,
+  extractIncomingText,
   resolveGoogleChatWorkspace,
   type GoogleChatEventPayload,
 } from "@/lib/chief-agent/agent";
@@ -68,13 +69,23 @@ export async function POST(request: Request) {
       hasLegacyToken: Boolean(token),
       error: verification.error ?? "Unauthorized",
     });
+    const status = verification.mode === "bearer" ? 401 : 403;
+    const detail = verification.error ?? "Unauthorized";
     return NextResponse.json(
-      { error: verification.error ?? "Unauthorized" },
-      { status: verification.mode === "bearer" ? 401 : 403 },
+      {
+        error: detail,
+        text:
+          status === 403
+            ? `Falha na verificação do webhook (403). ${detail} Confira se a URL do app no Google Cloud Console termina com o token completo (o mesmo valor de GOOGLE_CHAT_VERIFICATION_TOKEN no deploy) e se não há espaço ou caractere cortado.`
+            : `Falha na verificação do webhook (401). ${detail} Se usa autenticação Bearer, confira GOOGLE_CHAT_AUTH_AUDIENCE e o domínio público do app.`,
+      },
+      { status },
     );
   }
 
-  if (payload.type === "REMOVED_FROM_SPACE") {
+  const eventType = payload.type ?? (payload.message ? "MESSAGE" : undefined);
+
+  if (eventType === "REMOVED_FROM_SPACE") {
     return NextResponse.json({});
   }
 
@@ -92,7 +103,7 @@ export async function POST(request: Request) {
 
   await captureObservedGoogleChatSpace(supabase, integration, payload);
 
-  if (payload.type === "ADDED_TO_SPACE") {
+  if (eventType === "ADDED_TO_SPACE") {
     const spaceName = payload.space?.singleUserBotDm
       ? "neste chat"
       : payload.space?.displayName
@@ -407,10 +418,6 @@ async function rescheduleCalendarItemFromGoogleChat(input: {
 
   const title = item.topic_title ?? item.topic ?? item.id;
   return `Reagendei "${title}" para ${input.date}.`;
-}
-
-function extractIncomingText(payload: GoogleChatEventPayload) {
-  return (payload.message?.argumentText ?? payload.message?.text ?? "").trim();
 }
 
 function extractThreadId(payload: GoogleChatEventPayload) {
