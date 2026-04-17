@@ -57,6 +57,8 @@ export async function POST(request: Request) {
     authorizationHeader: request.headers.get("authorization"),
     legacyToken: token,
     requestUrl: request.url,
+    forwardedHost: request.headers.get("x-forwarded-host"),
+    forwardedProto: request.headers.get("x-forwarded-proto"),
   });
   if (!verification.ok) {
     console.warn("google_chat_auth_failed", {

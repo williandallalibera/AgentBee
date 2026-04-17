@@ -13,6 +13,9 @@ export async function middleware(request: NextRequest) {
   if (isLocalMode()) {
     return NextResponse.next();
   }
+  if (pathname.startsWith("/api/webhooks")) {
+    return NextResponse.next();
+  }
   const { supabase, getResponse } = createMiddlewareSupabase(request);
 
   const {

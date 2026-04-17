@@ -79,11 +79,6 @@ export function resolvePublishedGoogleChatEndpoint(input: {
   forwardedHost?: string | null;
   forwardedProto?: string | null;
 }) {
-  const publicAppUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
-  if (publicAppUrl) {
-    return buildGoogleChatEndpointUrl(publicAppUrl);
-  }
-
   const host = input.forwardedHost?.trim();
   if (host) {
     const proto = input.forwardedProto?.trim() || "https";
@@ -95,35 +90,69 @@ export function resolvePublishedGoogleChatEndpoint(input: {
     return buildGoogleChatEndpointUrl(url.origin);
   }
 
+  const publicAppUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (publicAppUrl) {
+    return buildGoogleChatEndpointUrl(publicAppUrl);
+  }
+
   return buildGoogleChatEndpointUrl("http://localhost:3000");
 }
 
-export function getGoogleChatAuthAudience(requestUrl: string) {
+export function getGoogleChatAuthAudience(input: {
+  requestUrl: string;
+  forwardedHost?: string | null;
+  forwardedProto?: string | null;
+}) {
   const configured = process.env.GOOGLE_CHAT_AUTH_AUDIENCE?.trim();
   if (configured) return configured;
-  return resolvePublishedGoogleChatEndpoint({ requestUrl });
+  return resolvePublishedGoogleChatEndpoint(input);
 }
 
 export async function verifyGoogleChatRequest(input: {
   authorizationHeader: string | null;
   legacyToken: string | null;
   requestUrl: string;
+  forwardedHost?: string | null;
+  forwardedProto?: string | null;
 }): Promise<GoogleChatVerificationResult> {
   const expectedLegacyToken = process.env.GOOGLE_CHAT_VERIFICATION_TOKEN?.trim();
+  const bearerToken = extractBearerToken(input.authorizationHeader);
+  const audience = bearerToken
+    ? getGoogleChatAuthAudience({
+        requestUrl: input.requestUrl,
+        forwardedHost: input.forwardedHost,
+        forwardedProto: input.forwardedProto,
+      })
+    : null;
+
   if (expectedLegacyToken && input.legacyToken) {
-    return verifyGoogleChatToken(input.legacyToken, expectedLegacyToken)
-      ? { ok: true, mode: "legacy_token", audience: null }
-      : {
-          ok: false,
-          mode: "legacy_token",
-          audience: null,
-          error: "Token de verificação do Google Chat inválido.",
-        };
+    if (verifyGoogleChatToken(input.legacyToken, expectedLegacyToken)) {
+      return { ok: true, mode: "legacy_token", audience: null };
+    }
+
+    // Em algumas configurações híbridas, o Google Chat envia token legado e bearer.
+    // Se o legado falhar mas houver bearer, tentamos validar por bearer para evitar falso negativo.
+    if (bearerToken && audience) {
+      const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audience);
+      return {
+        ...bearerResult,
+        mode: "bearer",
+        audience,
+        error: bearerResult.ok
+          ? undefined
+          : `Token legado inválido e bearer também falhou: ${bearerResult.error ?? "Unauthorized"}`,
+      };
+    }
+
+    return {
+      ok: false,
+      mode: "legacy_token",
+      audience: null,
+      error: "Token de verificação do Google Chat inválido.",
+    };
   }
 
-  const bearerToken = extractBearerToken(input.authorizationHeader);
-  if (bearerToken) {
-    const audience = getGoogleChatAuthAudience(input.requestUrl);
+  if (bearerToken && audience) {
     const bearerResult = await verifyGoogleChatBearerToken(bearerToken, audience);
     return {
       ...bearerResult,
