@@ -1,6 +1,10 @@
 import { requireWorkspaceMember } from "@/lib/auth/session";
 import { upsertPlaybookDocument } from "@/actions/playbook";
 import {
+  deletePlaybookVisualReference,
+  uploadPlaybookVisualReference,
+} from "@/actions/playbook-visual-refs";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -34,6 +38,7 @@ export default async function PlaybookPage() {
 
 function PlaybookPageView({
   docs,
+  visualRefs = [],
   localMode = false,
 }: {
   docs: {
@@ -41,6 +46,13 @@ function PlaybookPageView({
     title: string;
     updated_at: string;
     content_markdown: string;
+  }[];
+  visualRefs?: {
+    id: string;
+    title: string;
+    notes: string | null;
+    storage_path: string;
+    created_at: string;
   }[];
   localMode?: boolean;
 }) {
@@ -51,7 +63,9 @@ function PlaybookPageView({
           Playbook / Brand Brain
         </h1>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-          Memória institucional e diretrizes que alimentam o pipeline.
+          Memória institucional e diretrizes da marca. O pipeline também usa{" "}
+          <strong>pesquisa web</strong> (configure <code className="text-xs">SERPER_API_KEY</code> no
+          deploy) para enriquecer propostas — o playbook continua sendo a base de voz e posicionamento.
         </p>
       </div>
 
@@ -125,6 +139,75 @@ function PlaybookPageView({
           </CardContent>
         </Card>
       </div>
+
+      <Card className="rounded bg-white shadow dark:bg-card">
+        <CardHeader className="border-b border-gray-200 dark:border-gray-700">
+          <CardTitle>Artes modelo (referência visual)</CardTitle>
+          <CardDescription>
+            Envie imagens de referência para o agente de arte analisar o estilo (cores, layout, mood) e
+            orientar a geração da peça. Até 3 referências mais recentes são usadas por tarefa.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6 pt-4">
+          {localMode ? (
+            <p className="text-sm text-muted-foreground">
+              Modo local — upload desativado.
+            </p>
+          ) : (
+            <form action={uploadPlaybookVisualReference} className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="ref-file">Imagem (PNG, JPG, WebP — máx. 5 MB)</Label>
+                <Input id="ref-file" name="file" type="file" accept="image/png,image/jpeg,image/webp" required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ref-title">Título</Label>
+                <Input id="ref-title" name="title" placeholder="Ex.: Post LinkedIn institucional Q1" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ref-notes">Notas (opcional)</Label>
+                <Input id="ref-notes" name="notes" placeholder="Ex.: usar esse grid e tipografia" />
+              </div>
+              <div className="sm:col-span-2">
+                <Button type="submit">Enviar referência</Button>
+              </div>
+            </form>
+          )}
+
+          <div className="space-y-3">
+            <p className="text-sm font-medium text-gray-900 dark:text-white">Referências salvas</p>
+            {visualRefs.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhuma ainda.</p>
+            ) : (
+              <ul className="space-y-3">
+                {visualRefs.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex flex-wrap items-start justify-between gap-2 rounded border border-gray-200 p-3 dark:border-gray-700"
+                  >
+                    <div>
+                      <p className="font-medium">{r.title}</p>
+                      {r.notes ? (
+                        <p className="text-muted-foreground text-xs">{r.notes}</p>
+                      ) : null}
+                      <p className="text-muted-foreground text-xs">
+                        {new Date(r.created_at).toLocaleString("pt-BR")}
+                      </p>
+                    </div>
+                    {!localMode ? (
+                      <form action={deletePlaybookVisualReference}>
+                        <input type="hidden" name="id" value={r.id} />
+                        <Button type="submit" variant="outline" size="sm">
+                          Remover
+                        </Button>
+                      </form>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

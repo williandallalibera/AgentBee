@@ -15,7 +15,11 @@ import {
   type ConversationTurn,
   type GenerateCalendarParamsPayload,
 } from "@/lib/chief-agent/agent";
-import { executeChiefAgentPlan, type ServiceSupabase } from "@/lib/chief-agent/chief-google-chat-execution";
+import {
+  executeChiefAgentPlan,
+  sendPendingApprovalCardsFromSnapshot,
+  type ServiceSupabase,
+} from "@/lib/chief-agent/chief-google-chat-execution";
 
 /** Ferramentas só-leitura: podem rodar em paralelo na mesma rodada do modelo. */
 const CHIEF_READ_ONLY_TOOLS = new Set([
@@ -160,7 +164,7 @@ const CHIEF_TOOLS = [
     function: {
       name: "chief_create_campaign",
       description:
-        "Cria campanha, slots no calendário e opcionalmente dispara pipelines. Use para operações imediatas; para muitas tarefas em paralelo prefira chief_defer_heavy_operation.",
+        "Cria campanha, lista nome/data de cada post no calendário e, por padrão, inicia produção (pipeline) em até min(slot_count,8) peças — cada uma passará por aprovação inicial com card no Chat quando o resumo estiver pronto. Use auto_start_tasks=false para só planejar slots sem disparar pipeline. Para muitas peças em paralelo prefira chief_defer_heavy_operation.",
       parameters: {
         type: "object",
         properties: {
@@ -172,7 +176,11 @@ const CHIEF_TOOLS = [
           },
           slot_count: { type: "integer", description: "2 a 16" },
           auto_start_tasks: { type: "boolean" },
-          auto_start_count: { type: "integer", description: "0 a 4" },
+          auto_start_count: {
+            type: "integer",
+            description:
+              "Quantas peças disparam pipeline já na criação (0 a 16). Se omitido, usa min(slot_count,8).",
+          },
         },
         required: ["name"],
       },
@@ -385,6 +393,7 @@ async function runNormalizedPlan(
     workspaceId: ctx.workspaceId,
     plan,
     snapshot,
+    googleChatWebhook: ctx.googleChatWebhook,
   });
 }
 
@@ -402,8 +411,20 @@ async function executeChiefTool(
         snapshotCache = await loadChiefAgentSnapshot(ctx.supabase, ctx.workspaceId);
         return JSON.stringify(snapshotCache, null, 0).slice(0, chiefSnapshotJsonChars());
       }
-      case "chief_list_pending_approvals":
-        return formatPendingApprovalsReply(snapshot);
+      case "chief_list_pending_approvals": {
+        const text = formatPendingApprovalsReply(snapshot);
+        if (snapshot.pendingApprovals.length > 0) {
+          await sendPendingApprovalCardsFromSnapshot({
+            supabase: ctx.supabase,
+            workspaceId: ctx.workspaceId,
+            snapshot,
+            webhookUrl: ctx.googleChatWebhook,
+          });
+        }
+        return ctx.googleChatWebhook?.trim() && snapshot.pendingApprovals.length > 0
+          ? `${text}\n\n(Cards com botões de aprovação enviados ao espaço.)`
+          : text;
+      }
       case "chief_list_task_status":
         return formatTaskStatusReply(snapshot);
       case "chief_list_campaigns":
@@ -448,13 +469,15 @@ async function executeChiefTool(
           confidence: "high",
         });
       case "chief_create_campaign": {
+        const slotCount = clampInt(rawArgs.slot_count, 4, 2, 16);
+        const defaultAuto = Math.min(slotCount, 8);
         const draft: CampaignDraftPayload = {
           name: String(rawArgs.name ?? "").trim(),
           objective: rawArgs.objective != null ? String(rawArgs.objective).trim() || null : null,
           channels: normalizeChannels(rawArgs.channels),
-          slotCount: clampInt(rawArgs.slot_count, 4, 2, 16),
+          slotCount,
           autoStartTasks: rawArgs.auto_start_tasks !== false,
-          autoStartCount: clampInt(rawArgs.auto_start_count, 2, 0, 4),
+          autoStartCount: clampInt(rawArgs.auto_start_count, defaultAuto, 0, 16),
         };
         if (!draft.name) return JSON.stringify({ error: "name obrigatório" });
         return await runNormalizedPlan(ctx, snapshot, {
@@ -526,13 +549,15 @@ async function executeChiefTool(
           if (!c || typeof c !== "object") {
             return JSON.stringify({ error: "campaign obrigatório" });
           }
+          const slotCountDefer = clampInt(c.slot_count, 8, 2, 16);
+          const defaultAutoDefer = Math.min(slotCountDefer, 8);
           const draft: CampaignDraftPayload = {
             name: String(c.name ?? "").trim(),
             objective: c.objective != null ? String(c.objective).trim() || null : null,
             channels: normalizeChannels(c.channels),
-            slotCount: clampInt(c.slot_count, 8, 2, 16),
+            slotCount: slotCountDefer,
             autoStartTasks: c.auto_start_tasks !== false,
-            autoStartCount: clampInt(c.auto_start_count, 2, 0, 4),
+            autoStartCount: clampInt(c.auto_start_count, defaultAutoDefer, 0, 16),
           };
           if (!draft.name) return JSON.stringify({ error: "campaign.name obrigatório" });
           await tasks.trigger("chief-async-ops", {
@@ -721,7 +746,11 @@ export function chiefGoogleChatAckDeadlineMs() {
 
 /** Mensagem síncrona quando o turno excede o limite — o resultado completo segue via webhook do espaço. */
 export function chiefGoogleChatAckMessage() {
-  return "Anotado, trabalhando nisso...";
+  return (
+    "Anotado — trabalhando nisso.\n" +
+    "_Prazo estimado para a resposta completa: cerca de **1–3 min** " +
+    "(podendo passar disso se houver várias ferramentas ou fila no servidor)._"
+  );
 }
 
 export async function runChiefGoogleChatTurn(input: {
@@ -755,6 +784,7 @@ export async function runChiefGoogleChatTurn(input: {
       workspaceId: input.workspaceId,
       plan,
       snapshot,
+      googleChatWebhook: input.googleChatWebhook,
     });
     return { reply, intent: plan.intent };
   }
@@ -780,10 +810,12 @@ export async function runChiefGoogleChatTurn(input: {
     "Você é o Agente Chefe do AgentBee no Google Chat. Português do Brasil.",
     ...(toneLine ? [toneLine] : []),
     "Use as ferramentas para dados reais e ações. Nunca invente IDs ou status.",
+    "Prazo estimado: em **toda** resposta que use ferramentas, dados do workspace ou várias etapas, comece com uma frase curta de expectativa (ex.: «devo fechar em ~1 min», «2–4 min se enfileirar operação grande», «resposta rápida em segundos»). Saudações triviais de uma linha podem omitir.",
     "Multitarefa: se o usuário pedir várias coisas de uma vez (ex.: «status, pendências e próximas postagens»), na **mesma** resposta emita **várias** function calls — uma por necessidade — em paralelo quando forem consultas (listagens). Não responda só a primeira parte.",
     "Depois de obter resultados das ferramentas, una tudo numa resposta única, organizada (títulos curtos ou bullets).",
     "Se o pedido for apenas conversa ou dúvida geral sem dado do sistema, responda sem ferramentas.",
     "Para operações muito grandes (muitas campanhas/slots), use chief_defer_heavy_operation.",
+    "Fluxo campanha → posts: após chief_create_campaign ou mensagem de async concluída, chame chief_refresh_snapshot e chief_list_upcoming_posts para repetir ao usuário os títulos exatos e datas. Explique: (1) os cards com botões Aprovar/Pedir ajuste chegam quando cada tarefa atinge aprovação no pipeline e também quando você lista pendências (`chief_list_pending_approvals`) ou responde só com snapshot sem ferramentas sobre aprovações — o sistema reenvia cards ao espaço; (2) por padrão várias peças já entram em produção automaticamente (até8 ou slot_count); (3) slots só no calendário sem pipeline: auto_start_tasks=false.",
     "Ações que alteram estado (aprovar, criar campanha, etc.) podem ir na mesma rodada que leituras, mas evite misturar duas escritas dependentes sem ver o resultado da primeira.",
     summaryBlock,
     `Snapshot inicial (pode estar desatualizado — use chief_refresh_snapshot após mudanças): ${JSON.stringify(snapshot).slice(0, snapLim)}`,
@@ -886,6 +918,7 @@ export async function runChiefGoogleChatTurn(input: {
     workspaceId: input.workspaceId,
     plan,
     snapshot: snapshotCache ?? snapshot,
+    googleChatWebhook: input.googleChatWebhook,
   });
   return { reply, intent: plan.intent };
 }

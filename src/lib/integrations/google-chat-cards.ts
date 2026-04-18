@@ -5,6 +5,14 @@
 
 export type ApprovalCardStage = "initial" | "final";
 
+/** Link para `/calendar?item=…` (destaca o slot no painel). */
+export function buildCalendarDeepLink(appUrl: string, calendarItemId: string) {
+  const base = appUrl.replace(/\/$/, "").trim();
+  const id = calendarItemId.trim();
+  if (!base || !id) return null;
+  return `${base}/calendar?item=${encodeURIComponent(id)}`;
+}
+
 function cardAction(
   actionMethodName: string,
   parameters: Array<{ key: string; value: string }>,
@@ -40,6 +48,8 @@ export function buildApprovalCard(input: {
   caption: string;
   imageUrl?: string | null;
   webUrl: string;
+  /** Slot do calendário editorial vinculado à task (opcional). */
+  calendarUrl?: string | null;
 }) {
   const stageLabel = input.stage === "initial" ? "Aprovação inicial" : "Aprovação final";
   const bodyText = truncate(input.caption, 1800);
@@ -74,14 +84,22 @@ export function buildApprovalCard(input: {
     },
   });
 
+  const linkButtons: Array<Record<string, unknown>> = [
+    {
+      text: "Abrir no AgentBee",
+      onClick: { openLink: { url: input.webUrl } },
+    },
+  ];
+  const cal = input.calendarUrl?.trim();
+  if (cal) {
+    linkButtons.push({
+      text: "Ver no calendário",
+      onClick: { openLink: { url: cal } },
+    });
+  }
   widgets.push({
     buttonList: {
-      buttons: [
-        {
-          text: "Abrir no AgentBee",
-          onClick: { openLink: { url: input.webUrl } },
-        },
-      ],
+      buttons: linkButtons,
     },
   });
 
@@ -172,6 +190,8 @@ export function buildPublicationResultCard(input: {
   status: "published" | "failed";
   postUrl?: string | null;
   errorMessage?: string | null;
+  /** Painel web — OAuth Instagram/LinkedIn (reautenticação). */
+  integrationsUrl?: string | null;
 }) {
   const isFail = input.status === "failed";
   const widgets: Array<Record<string, unknown>> = [
@@ -195,7 +215,14 @@ export function buildPublicationResultCard(input: {
   }
   if (isFail) {
     buttons.push(cardButton("Tentar de novo", "retry_publication", { publicationId: input.publicationId }));
- }
+    const integ = input.integrationsUrl?.trim();
+    if (integ) {
+      buttons.push({
+        text: "Abrir integrações",
+        onClick: { openLink: { url: integ } },
+      });
+    }
+  }
 
   if (buttons.length) {
     widgets.push({ buttonList: { buttons } });

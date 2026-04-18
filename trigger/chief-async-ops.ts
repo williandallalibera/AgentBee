@@ -47,7 +47,7 @@ export const chiefAsyncOps = task({
 
     const head = payload.announcePrefix?.trim() ?? "Processamento em background concluído.";
     const body = `${head}\n\n${text}`.trim();
-    const lines = body.split("\n").slice(0, 45);
+    const lines = body.split("\n").slice(0, 80);
 
     if (payload.googleChatWebhook?.trim()) {
       await sendGoogleChatMessage(payload.googleChatWebhook.trim(), {

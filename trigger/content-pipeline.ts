@@ -7,8 +7,10 @@ import {
   generateSocialImageBytes,
   runAgentSpecialistStage,
 } from "../src/lib/integrations/openai";
+import { runWebResearchForContentTask } from "../src/lib/integrations/web-research";
+import { buildVisualStyleNotesFromReferences } from "../src/lib/integrations/visual-reference-styles";
 import { sendGoogleChatCard, sendGoogleChatMessage } from "../src/lib/integrations/google-chat";
-import { buildApprovalCard } from "../src/lib/integrations/google-chat-cards";
+import { buildApprovalCard, buildCalendarDeepLink } from "../src/lib/integrations/google-chat-cards";
 import { sendApprovalEmail } from "../src/lib/integrations/email";
 import { ensureWorkspaceAgents, getAgentIdByRole } from "../src/lib/agents/ensure-workspace-agents";
 import { uploadSocialAssetPng } from "../src/lib/storage/social-art";
@@ -89,14 +91,24 @@ export const contentPipeline = task({
 
     const { data: playbookDocs } = await supabase
       .from("playbook_documents")
-      .select("content_markdown")
+      .select("title, content_markdown")
       .eq("workspace_id", wsId)
       .order("updated_at", { ascending: false })
-      .limit(3);
+      .limit(12);
 
     const playbookExcerpt =
-      playbookDocs?.map((d) => d.content_markdown).join("\n\n") ||
-      "Playbook vazio — preencha no painel antes de gerar conteúdo.";
+      playbookDocs?.length ?
+        playbookDocs
+          .map((d) => `## ${d.title}\n${d.content_markdown}`)
+          .join("\n\n")
+          .slice(0, 28_000)
+      : "Playbook vazio — preencha no painel antes de gerar conteúdo.";
+
+    const webPack = await runWebResearchForContentTask({
+      taskTitle: taskRow.title as string,
+      campaignObjective,
+    });
+    const webResearchMarkdown = webPack.markdown;
 
     await supabase
       .from("content_tasks")
@@ -113,7 +125,11 @@ export const contentPipeline = task({
       role: "researcher",
       playbookExcerpt,
       taskTitle: taskRow.title,
-      contextJson: { campaign_objective: campaignObjective },
+      contextJson: {
+        campaign_objective: campaignObjective,
+        web_research: webResearchMarkdown.slice(0, 12_000),
+        web_research_source: webPack.source,
+      },
     });
     if (researcherId) {
       await supabase.from("agent_runs").insert({
@@ -124,7 +140,11 @@ export const contentPipeline = task({
         status: "success",
         output_summary: researchOut.summary,
         output_json: researchOut.structured,
-        input_json: { task_title: taskRow.title },
+        input_json: {
+          task_title: taskRow.title,
+          web_query: webPack.query,
+          web_source: webPack.source,
+        },
         finished_at: new Date().toISOString(),
       });
     }
@@ -194,6 +214,19 @@ export const contentPipeline = task({
 
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
     const approvalLink = `${appUrl}/approvals/${payload.taskId}/initial`;
+    let calendarItemId =
+      typeof taskRow.calendar_item_id === "string" ? taskRow.calendar_item_id : null;
+    if (!calendarItemId) {
+      const { data: calRow } = await supabase
+        .from("calendar_items")
+        .select("id")
+        .eq("content_task_id", payload.taskId)
+        .order("planned_date", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      calendarItemId = calRow?.id ?? null;
+    }
+    const calendarUrl = calendarItemId ? buildCalendarDeepLink(appUrl, calendarItemId) : null;
 
     const { data: approval1, error: a1Err } = await supabase
       .from("approvals")
@@ -230,6 +263,7 @@ export const contentPipeline = task({
         caption: proposal.summary_markdown,
         imageUrl: null,
         webUrl: approvalLink,
+        calendarUrl,
       });
       await sendGoogleChatCard(googleChatWebhook, card, {
         title: "Preciso de uma revisão rápida da direção desta peça",
@@ -342,11 +376,13 @@ export const contentPipeline = task({
     const gen = await generateCopyAndCarousel({
       playbookExcerpt,
       proposalSummary: proposal.summary_markdown,
+      webResearchMarkdown,
     });
 
     const auditResult = await auditContent({
       playbookExcerpt,
       copy: gen.copy_markdown,
+      webResearchMarkdown,
     });
 
     const { data: versionRow, error: vErr } = await supabase
@@ -396,8 +432,13 @@ export const contentPipeline = task({
       },
     });
     let visualUrl: string | null = null;
+    const visualStyleNotes = await buildVisualStyleNotesFromReferences({
+      supabase,
+      workspaceId: wsId,
+    });
     const imageBytes = await generateSocialImageBytes({
       prompt: `Imagem quadrada para post em rede social B2B, moderna e limpa, sem texto minúsculo ilegível. Conceito: ${artBrief.summary}. Peça: ${taskRow.title}.`,
+      visualStyleNotes: visualStyleNotes || undefined,
     });
     if (imageBytes) {
       visualUrl = await uploadSocialAssetPng({
@@ -485,6 +526,7 @@ export const contentPipeline = task({
         caption: gen.copy_markdown,
         imageUrl: visualUrl,
         webUrl: finalLink,
+        calendarUrl,
       });
       await sendGoogleChatCard(googleChatWebhook, card, {
         title: "Versão final pronta para aprovação",

@@ -9,8 +9,15 @@ export type ProposalResult = {
   research_summary_json: Record<string, unknown>;
 };
 
+const PLAYBOOK_CHARS_PROPOSAL = 16_000;
+const PLAYBOOK_CHARS_COPY = 12_000;
+const PLAYBOOK_CHARS_AUDIT = 10_000;
+const PLAYBOOK_CHARS_SPECIALIST = 10_000;
+const WEB_RESEARCH_CHARS = 12_000;
+
 export async function generateContentProposal(input: {
   playbookExcerpt: string;
+  webResearchMarkdown?: string;
   taskTitle: string;
   campaignObjective?: string | null;
 }): Promise<ProposalResult> {
@@ -19,17 +26,28 @@ export async function generateContentProposal(input: {
     return mockProposal(input);
   }
 
+  const webBlock =
+    input.webResearchMarkdown?.trim().length ?
+      `\n\n---\nPesquisa / contexto de mercado (use para enriquecer; o playbook acima é identidade da marca):\n${input.webResearchMarkdown.trim().slice(0, WEB_RESEARCH_CHARS)}\n`
+ : "";
+
   const body = {
     model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
     messages: [
       {
         role: "system",
         content:
-          "Você é estrategista de marketing B2B para a Kolmena Latam. Responda sempre em português do Brasil. Retorne apenas JSON válido.",
+          "Você é estrategista de marketing B2B. Responda em português do Brasil. Retorne apenas JSON válido. " +
+          "O playbook descreve a empresa (tom, produto, restrições). A seção de pesquisa traz fatos e referências externas — integre com critério, sem copiar texto de terceiros. " +
+          "Em research_summary_json use bullets objetivos (tendências, ângulos, riscos) citando que se baseiam na pesquisa quando houver.",
       },
       {
         role: "user",
-        content: `Playbook (trecho):\n${input.playbookExcerpt.slice(0, 12000)}\n\nTítulo da peça: ${input.taskTitle}\nObjetivo da campanha: ${input.campaignObjective ?? "não informado"}\n\nRetorne um objeto JSON com chaves: summary_markdown (string markdown), strategy_json (objeto com tema, objetivo, canal, formato, cta, justificativa), research_summary_json (objeto com bullets de pesquisa simulada).`,
+        content:
+          `Playbook — identidade e diretrizes da marca:\n${input.playbookExcerpt.slice(0, PLAYBOOK_CHARS_PROPOSAL)}` +
+          webBlock +
+          `\n\nTítulo da peça: ${input.taskTitle}\nObjetivo da campanha: ${input.campaignObjective ?? "não informado"}\n\n` +
+          `Retorne um objeto JSON com chaves: summary_markdown (string markdown), strategy_json (objeto com tema, objetivo, canal, formato, cta, justificativa), research_summary_json (objeto com bullets: array de strings ou objeto rico com fontes_resumidas).`,
       },
     ],
     response_format: { type: "json_object" },
@@ -75,6 +93,7 @@ export async function generateContentProposal(input: {
 export async function generateCopyAndCarousel(input: {
   playbookExcerpt: string;
   proposalSummary: string;
+  webResearchMarkdown?: string;
 }): Promise<{
   copy_markdown: string;
   carousel_structure_json: Record<string, unknown>;
@@ -93,12 +112,21 @@ export async function generateCopyAndCarousel(input: {
     };
   }
 
+  const web =
+    input.webResearchMarkdown?.trim().length ?
+      `\nContexto de pesquisa (referência):\n${input.webResearchMarkdown.trim().slice(0, 8000)}\n`
+      : "";
+
   const body = {
     model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
     messages: [
       {
         role: "user",
-        content: `Com base no playbook:\n${input.playbookExcerpt.slice(0, 8000)}\n\nProposta aprovada:\n${input.proposalSummary}\n\nResponda JSON com copy_markdown e carousel_structure_json (slides com title/body).`,
+        content:
+          `Playbook:\n${input.playbookExcerpt.slice(0, PLAYBOOK_CHARS_COPY)}\n` +
+          web +
+          `\nProposta aprovada:\n${input.proposalSummary}\n\n` +
+          `Responda JSON com copy_markdown e carousel_structure_json (slides com title/body). Tom alinhado ao playbook; gancho forte no primeiro slide.`,
       },
     ],
     response_format: { type: "json_object" },
@@ -137,17 +165,25 @@ export async function generateCopyAndCarousel(input: {
 export async function auditContent(input: {
   playbookExcerpt: string;
   copy: string;
+  webResearchMarkdown?: string;
 }): Promise<{ ok: boolean; notes: string }> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
     return { ok: true, notes: "Auditoria offline (sem OPENAI_API_KEY)." };
   }
+  const web =
+    input.webResearchMarkdown?.trim().length ?
+      `\nNotas de pesquisa (consistência):\n${input.webResearchMarkdown.trim().slice(0, 4000)}\n`
+      : "";
   const body = {
     model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
     messages: [
       {
         role: "user",
-        content: `Playbook:\n${input.playbookExcerpt.slice(0, 4000)}\n\nCopy:\n${input.copy}\n\nResponda JSON { ok: boolean, notes: string }.`,
+        content:
+          `Playbook:\n${input.playbookExcerpt.slice(0, PLAYBOOK_CHARS_AUDIT)}\n` +
+          web +
+          `\nCopy:\n${input.copy}\n\nResponda JSON { ok: boolean, notes: string }.`,
       },
     ],
     response_format: { type: "json_object" },
@@ -170,6 +206,7 @@ export async function auditContent(input: {
 
 function mockProposal(input: {
   taskTitle: string;
+  webResearchMarkdown?: string;
 }): ProposalResult {
   return {
     summary_markdown: `# Resumo de proposta — ${input.taskTitle}
@@ -191,6 +228,9 @@ function mockProposal(input: {
       bullets: [
         "Tendência: conteúdo educativo curto",
         "Referência: tom consultivo B2B",
+        input.webResearchMarkdown?.trim()
+          ? "Contexto externo fornecido acima (modo mock — configure APIs)"
+          : "Configure SERPER_API_KEY para pesquisa web ao vivo",
       ],
     },
   };
@@ -234,7 +274,7 @@ export async function runAgentSpecialistStage(input: {
       },
       {
         role: "user",
-        content: `Papel: ${input.role}\nTítulo da peça: ${input.taskTitle}\nPlaybook (trecho):\n${input.playbookExcerpt.slice(0, 6000)}\nContexto anterior (JSON):\n${JSON.stringify(input.contextJson).slice(0, 8000)}`,
+        content: `Papel: ${input.role}\nTítulo da peça: ${input.taskTitle}\nPlaybook (trecho):\n${input.playbookExcerpt.slice(0, PLAYBOOK_CHARS_SPECIALIST)}\nContexto anterior (JSON):\n${JSON.stringify(input.contextJson).slice(0, 10_000)}`,
       },
     ],
     response_format: { type: "json_object" },
@@ -273,9 +313,16 @@ export async function runAgentSpecialistStage(input: {
  */
 export async function generateSocialImageBytes(input: {
   prompt: string;
+  /** Texto derivado de artes modelo (visão) — reforça estilo sem enviar a imagem ao DALL·E */
+  visualStyleNotes?: string;
 }): Promise<Uint8Array | null> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return null;
+
+  const style = input.visualStyleNotes?.trim()
+    ? `\n\nDiretriz de estilo a respeitar (referências do cliente):\n${input.visualStyleNotes.trim().slice(0, 2000)}`
+    : "";
+  const fullPrompt = `${input.prompt.slice(0, 2800)}${style}`.slice(0, 3500);
 
   const res = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
@@ -285,7 +332,7 @@ export async function generateSocialImageBytes(input: {
     },
     body: JSON.stringify({
       model: "dall-e-3",
-      prompt: input.prompt.slice(0, 3500),
+      prompt: fullPrompt,
       n: 1,
       size: "1024x1024",
       quality: "standard",

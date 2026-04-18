@@ -80,6 +80,7 @@ type CalendarRow = {
 };
 
 type PlaybookRow = {
+  title?: string;
   content_markdown: string;
 };
 
@@ -313,10 +314,10 @@ export async function loadChiefAgentSnapshot(
       .limit(50),
     supabase
       .from("playbook_documents")
-      .select("content_markdown")
+      .select("title, content_markdown")
       .eq("workspace_id", workspaceId)
       .order("updated_at", { ascending: false })
-      .limit(5),
+      .limit(12),
     supabase.from("brands").select("id").eq("workspace_id", workspaceId),
     supabase
       .from("calendar_items")
@@ -352,7 +353,7 @@ export async function loadChiefAgentSnapshot(
   }
 
   const playbookExcerpt = ((playbookDocs ?? []) as PlaybookRow[])
-    .map((row) => row.content_markdown)
+    .map((row) => `## ${row.title ?? "Documento"}\n${row.content_markdown}`)
     .join("\n\n")
     .slice(0, chiefPlaybookSnapshotChars());
 
@@ -432,8 +433,8 @@ export function chiefHistoryLimit() {
 
 function chiefPlaybookSnapshotChars() {
   const raw = process.env.CHIEF_PLAYBOOK_SNAPSHOT_CHARS?.trim();
-  const n = raw ? Number.parseInt(raw, 10) : 16_000;
-  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 16_000;
+  const n = raw ? Number.parseInt(raw, 10) : 24_000;
+  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 24_000;
 }
 
 export async function loadChiefConversationHistory(
@@ -639,6 +640,7 @@ export async function planChiefAgentResponse(input: {
     "Nunca invente IDs, datas, aprovações, tarefas ou status.",
     "Se faltar contexto para agir, responda pedindo confirmação ou esclarecimento.",
     "Se a mensagem for apenas social ou aberta, responda como um gerente operacional útil usando os dados fornecidos.",
+    "Quando a resposta depender de interpretar snapshot ou vários dados, comece o campo reply com uma frase curta de prazo estimado (ex.: «em até ~1 min na prática», «resposta imediata»).",
     playbookHint,
     "Retorne somente JSON válido.",
   ]
@@ -1132,12 +1134,12 @@ function parseCampaignDraftFromPlan(
   const autoStartTasks =
     typeof autoStartTasksRaw === "boolean" ? autoStartTasksRaw : true;
 
-  let autoStartCount = 2;
+  let autoStartCount = Math.min(slotCount, 8);
   const asc = o.autoStartCount ?? o.auto_start_count;
   if (typeof asc === "number" && Number.isFinite(asc)) {
     autoStartCount = asc;
   }
-  autoStartCount = Math.min(Math.max(Math.floor(autoStartCount), 0), 4);
+  autoStartCount = Math.min(Math.max(Math.floor(autoStartCount), 0), 16);
 
   const objective =
     typeof o.objective === "string" ? (o.objective.trim() || null) : null;
@@ -1707,21 +1709,41 @@ export async function executeCreateCampaignFromChief(
     }
   }
 
+  const postLines: string[] = [];
+  for (let i = 0; i < insertedItems.length; i += 1) {
+    const row = rows[i] as { planned_date?: string; channel_type?: string };
+    const title = slotTitles[i] ?? `${name} — ${i + 1}`;
+    const when = row?.planned_date ?? "—";
+    const ch = row?.channel_type === "linkedin" ? "LinkedIn" : "Instagram";
+    postLines.push(`${i + 1}. *${title}* — ${when} (${ch})`);
+  }
+
   let pipelineNote = "";
   if (autoStart && startN > 0 && !hasTrigger) {
     pipelineNote =
       "\n\nConfigure TRIGGER_SECRET_KEY no deploy para eu disparar o pipeline automaticamente; os slots já estão no calendário para iniciar manualmente.";
   } else if (autoStart && startN > 0 && triggered.length > 0) {
-    pipelineNote = `\n\nDisparei o pipeline em ${triggered.length} tarefa(s): ${triggered.join(", ")}. Avisos de aprovação seguem o fluxo normal (e-mail/Google Chat se configurado).`;
+    pipelineNote =
+      `\n\n*Produção iniciada* em ${triggered.length} tarefa(s). Task IDs: \`${triggered.join("`, `")}\`.\n` +
+      "Quando o resumo de cada uma estiver pronto, você recebe um *card no Chat* com botões para aprovar ou pedir ajuste (e pode acompanhar em Aprovações no painel).";
   } else if (autoStart && startN > 0 && triggered.length === 0) {
     pipelineNote =
       "\n\nTentei iniciar tarefas no pipeline, mas houve falha ao criar as linhas — confira no painel em Conteúdo / Calendário.";
+  } else if (!autoStart || startN === 0) {
+    pipelineNote =
+      "\n\n*Nenhuma tarefa disparada ainda* — os posts estão só no calendário. Peça para *iniciar produção* de um slot (item do calendário) ou use os lembretes com botão «Começar agora» quando aparecerem.";
+  }
+
+  const idleSlots = insertedItems.length - triggered.length;
+  if (autoStart && startN > 0 && triggered.length > 0 && idleSlots > 0) {
+    pipelineNote += `\n\nMais *${idleSlots}* post(s) só planejados no calendário — posso iniciar depois se você pedir.`;
   }
 
   const chLabel = channels.join(" e ");
   return (
-    `Campanha «${name}» criada (id ${campaignId}). ` +
-      `${insertedItems.length} post(s) no calendário (${chLabel}).` +
+    `Campanha *«${name}»* criada (id \`${campaignId}\`).\n` +
+      `${insertedItems.length} post(s) no calendário (${chLabel}).\n\n` +
+      `*Sugestões planejadas:*\n${postLines.join("\n")}` +
       pipelineNote
   );
 }

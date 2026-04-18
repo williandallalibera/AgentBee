@@ -1,6 +1,10 @@
 import { tasks, wait } from "@trigger.dev/sdk/v3";
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
-import { buildApprovalCard } from "@/lib/integrations/google-chat-cards";
+import {
+  buildApprovalCard,
+  buildCalendarDeepLink,
+  type ApprovalCardStage,
+} from "@/lib/integrations/google-chat-cards";
 import { sendGoogleChatCard } from "@/lib/integrations/google-chat";
 import {
   formatCampaignStatusReply,
@@ -20,15 +24,121 @@ import {
 
 export type ServiceSupabase = ReturnType<typeof createServiceSupabaseClient>;
 
+const PENDING_APPROVAL_LIST_CARD_LIMIT = 8;
+
+/** Um card por pendência (mesmos botões do pipeline) — webhook do espaço. */
+export async function sendPendingApprovalCardsFromSnapshot(input: {
+  supabase: ServiceSupabase;
+  workspaceId: string;
+  snapshot: ChiefAgentSnapshot;
+  webhookUrl: string | null | undefined;
+}) {
+  const webhook = input.webhookUrl?.trim();
+  if (!webhook || input.snapshot.pendingApprovals.length === 0) return;
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
+  const seenTask = new Set<string>();
+  let sent = 0;
+
+  for (const approval of input.snapshot.pendingApprovals) {
+    if (sent >= PENDING_APPROVAL_LIST_CARD_LIMIT) break;
+    if (seenTask.has(approval.taskId)) continue;
+    seenTask.add(approval.taskId);
+
+    const taskId = approval.taskId;
+    const stage: ApprovalCardStage =
+      approval.approvalType === "final_delivery" ||
+      approval.taskStatus === "awaiting_final_approval"
+        ? "final"
+        : "initial";
+
+    const { data: version } = await input.supabase
+      .from("content_versions")
+      .select("copy_markdown, visual_draft_url")
+      .eq("task_id", taskId)
+      .order("version_number", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const { data: taskMeta } = await input.supabase
+      .from("content_tasks")
+      .select("calendar_item_id")
+      .eq("id", taskId)
+      .maybeSingle();
+    let calId = taskMeta?.calendar_item_id;
+    if (typeof calId !== "string" || !calId.trim()) {
+      const { data: calRow } = await input.supabase
+        .from("calendar_items")
+        .select("id")
+        .eq("content_task_id", taskId)
+        .order("planned_date", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      calId = calRow?.id ?? null;
+    }
+    const calendarUrl =
+      typeof calId === "string" && calId.trim() ? buildCalendarDeepLink(appUrl, calId) : null;
+
+    const webUrl =
+      stage === "final"
+        ? `${appUrl}/approvals/${taskId}/final`
+        : `${appUrl}/approvals/${taskId}/initial`;
+
+    const phaseHint =
+      approval.approvalType === "initial_summary"
+        ? "Aprovação inicial — resumo da proposta."
+        : approval.approvalType === "final_delivery"
+          ? "Aprovação final — copy e arte."
+          : `Tipo: ${approval.approvalType}`;
+    const copy = version?.copy_markdown?.trim();
+    const caption = [phaseHint, copy].filter(Boolean).join("\n\n").slice(0, 4000);
+
+    const card = buildApprovalCard({
+      taskId,
+      stage,
+      title: approval.title,
+      caption: caption || phaseHint,
+      imageUrl: version?.visual_draft_url ?? null,
+      webUrl,
+      calendarUrl,
+    });
+
+    await sendGoogleChatCard(webhook, card, {
+      title: "Aprovação pendente",
+      subtitle: approval.title,
+      lines: [
+        stage === "final" ? "Fase: aprovação final" : "Fase: aprovação inicial",
+        `Task: ${taskId}`,
+      ],
+      linkUrl: webUrl,
+    });
+    sent += 1;
+  }
+}
+
 export async function executeChiefAgentPlan(input: {
   supabase: ServiceSupabase;
   workspaceId: string;
   plan: ChiefAgentPlan;
   snapshot: ChiefAgentSnapshot;
+  /** Quando definido, intent `pending_approvals` também envia cards ao espaço. */
+  googleChatWebhook?: string | null;
 }): Promise<string> {
   switch (input.plan.intent) {
-    case "pending_approvals":
-      return formatPendingApprovalsReply(input.snapshot);
+    case "pending_approvals": {
+      const base = formatPendingApprovalsReply(input.snapshot);
+      if (input.snapshot.pendingApprovals.length === 0) return base;
+      await sendPendingApprovalCardsFromSnapshot({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        snapshot: input.snapshot,
+        webhookUrl: input.googleChatWebhook,
+      });
+      if (input.googleChatWebhook?.trim()) {
+        return `${base}\n\nEnviei no espaço um card por pendência com *Aprovar*, *Pedir ajuste*, *Nova direção*, *Cancelar fluxo* e link para o painel.`;
+      }
+      return base;
+    }
     case "task_status":
       return formatTaskStatusReply(input.snapshot);
     case "upcoming_posts":
@@ -553,7 +663,7 @@ async function chiefPreviewPostInChat(input: {
 
   const { data: task } = await input.supabase
     .from("content_tasks")
-    .select("id, title, status")
+    .select("id, title, status, calendar_item_id")
     .eq("id", input.taskId.trim())
     .maybeSingle();
 
@@ -585,6 +695,20 @@ async function chiefPreviewPostInChat(input: {
       ? `${appUrl}/approvals/${input.taskId}/final`
       : `${appUrl}/approvals/${input.taskId}/initial`;
 
+  let calId = task?.calendar_item_id;
+  if (typeof calId !== "string" || !calId.trim()) {
+    const { data: calRow } = await input.supabase
+      .from("calendar_items")
+      .select("id")
+      .eq("content_task_id", input.taskId.trim())
+      .order("planned_date", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    calId = calRow?.id ?? null;
+  }
+  const calendarUrl =
+    typeof calId === "string" && calId.trim() ? buildCalendarDeepLink(appUrl, calId) : null;
+
   const card = buildApprovalCard({
     taskId: input.taskId.trim(),
     stage,
@@ -592,6 +716,7 @@ async function chiefPreviewPostInChat(input: {
     caption: (version?.copy_markdown ?? detail).slice(0, 4000),
     imageUrl: version?.visual_draft_url ?? null,
     webUrl,
+    calendarUrl,
   });
 
   await sendGoogleChatCard(webhook, card, {

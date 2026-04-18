@@ -18,6 +18,11 @@ function serviceSupabase() {
 const MAX_RETRIES = 6;
 const BACKOFF_MINUTES_BASE = 2;
 
+function integrationsPageUrl() {
+  const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "").trim();
+  return base ? `${base}/integrations` : null;
+}
+
 function chiefNarrationLine(input: {
   ok: boolean;
   title: string;
@@ -227,12 +232,13 @@ export const publishSocial = task({
 
         if (googleChatWebhook) {
           if (attempt >= MAX_RETRIES) {
-            const card = buildPublicationResultCard({
+                       const card = buildPublicationResultCard({
               publicationId: pub.id,
               taskTitle: taskRow.title as string,
               channel: pub.channel_type,
               status: "failed",
               errorMessage: err ?? "erro",
+              integrationsUrl: integrationsPageUrl(),
             });
             await sendGoogleChatCard(googleChatWebhook, card, {
               title: "Falha ao publicar",

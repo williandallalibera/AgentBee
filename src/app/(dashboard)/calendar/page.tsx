@@ -4,6 +4,7 @@ import {
   generateCalendarSuggestionsFromForm,
   rescheduleCalendarItemForm,
 } from "@/actions/calendar";
+import { CalendarScrollToItem } from "@/components/calendar/calendar-scroll-to-item";
 import {
   Card,
   CardContent,
@@ -31,11 +32,19 @@ type CalendarItemView = {
   reminder_count: number;
 };
 
-export default async function CalendarPage() {
+export default async function CalendarPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ item?: string }>;
+}) {
+  const sp = await searchParams;
+  const focusItemId = sp.item?.trim() || null;
+
   if (isLocalMode()) {
     return (
       <CalendarPageView
         localMode
+        focusItemId={focusItemId}
         items={localCalendarItems}
         campaigns={localCampaigns.map((campaign) => ({
           id: campaign.id,
@@ -83,17 +92,19 @@ export default async function CalendarPage() {
     };
   });
 
-  return <CalendarPageView items={items} campaigns={campaigns} />;
+  return <CalendarPageView focusItemId={focusItemId} items={items} campaigns={campaigns} />;
 }
 
 function CalendarPageView({
   items,
   campaigns,
   localMode = false,
+  focusItemId = null,
 }: {
   items: CalendarItemView[];
   campaigns: Array<{ id: string; name: string }>;
   localMode?: boolean;
+  focusItemId?: string | null;
 }) {
   const grouped = campaigns.map((campaign) => ({
     ...campaign,
@@ -102,6 +113,7 @@ function CalendarPageView({
 
   return (
     <div className="space-y-6">
+      <CalendarScrollToItem itemId={focusItemId ?? null} />
       <div>
         <h1 className="text-2xl font-semibold text-gray-800 dark:text-white">
           Calendário
@@ -141,7 +153,12 @@ function CalendarPageView({
             <p className="text-sm text-muted-foreground">Nenhum item no calendário.</p>
           ) : (
             items.map((item) => (
-              <CalendarItemRow key={item.id} item={item} localMode={localMode} />
+              <CalendarItemRow
+                key={item.id}
+                item={item}
+                localMode={localMode}
+                highlight={focusItemId === item.id}
+              />
             ))
           )}
         </CardContent>
@@ -173,7 +190,13 @@ function CalendarPageView({
                     </p>
                   ) : (
                     campaign.items.map((item) => (
-                      <CalendarItemRow key={item.id} item={item} localMode={localMode} compact />
+                      <CalendarItemRow
+                        key={item.id}
+                        item={item}
+                        localMode={localMode}
+                        compact
+                        highlight={focusItemId === item.id}
+                      />
                     ))
                   )}
                 </div>
@@ -190,13 +213,22 @@ function CalendarItemRow({
   item,
   localMode,
   compact = false,
+  highlight = false,
 }: {
   item: CalendarItemView;
   localMode: boolean;
   compact?: boolean;
+  highlight?: boolean;
 }) {
   return (
-    <div className="rounded border border-gray-200 p-3 dark:border-gray-700">
+    <div
+      id={`calendar-item-${item.id}`}
+      className={`rounded border p-3 dark:border-gray-700 ${
+        highlight
+          ? "border-primary ring-2 ring-primary/40 ring-offset-2 dark:ring-offset-background"
+          : "border-gray-200"
+      }`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="font-medium text-gray-900 dark:text-white">{item.topic_title}</p>
         <Badge variant="outline">{item.status}</Badge>
