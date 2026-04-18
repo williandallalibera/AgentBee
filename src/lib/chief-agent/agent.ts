@@ -10,6 +10,11 @@ export type GoogleChatEventPayload = {
   /** Alguns proxies ou versões do payload podem enviar o tipo com este nome. */
   eventType?: string;
   token?: string;
+  /** Clique em botão de card (Workspace Add-on / Chat API). */
+  action?: {
+    actionMethodName?: string;
+    parameters?: Array<{ key?: string; value?: string }>;
+  };
   space?: {
     name?: string;
     displayName?: string;
@@ -200,7 +205,7 @@ export type ChiefAgentSnapshot = {
   }>;
 };
 
-type ConversationTurn = {
+export type ConversationTurn = {
   user: string;
   agent: string | null;
   createdAt: string;
@@ -388,11 +393,19 @@ export async function loadChiefAgentSnapshot(
   };
 }
 
+function chiefHistoryLimit() {
+  const raw = process.env.CHIEF_HISTORY_LIMIT?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 24;
+  return Number.isFinite(n) && n >= 1 && n <= 80 ? n : 24;
+}
+
 export async function loadChiefConversationHistory(
   supabase: Queryable,
   workspaceId: string,
   externalThreadId: string | null,
+  limit?: number,
 ): Promise<ConversationTurn[]> {
+  const lim = limit ?? chiefHistoryLimit();
   const builder = supabase
     .from("chief_agent_conversations")
     .select("message_text, intent, response_summary, created_at")
@@ -403,8 +416,8 @@ export async function loadChiefConversationHistory(
     ? await builder
         .eq("external_thread_id", externalThreadId)
         .order("created_at", { ascending: false })
-        .limit(8)
-    : await builder.order("created_at", { ascending: false }).limit(8);
+        .limit(lim)
+    : await builder.order("created_at", { ascending: false }).limit(lim);
 
   const rows = (data ?? []) as ConversationRow[];
   return rows
@@ -415,6 +428,71 @@ export async function loadChiefConversationHistory(
       agent: row.response_summary,
       createdAt: row.created_at,
     }));
+}
+
+export async function loadChiefThreadSummary(
+  supabase: Queryable,
+  workspaceId: string,
+  externalThreadId: string | null,
+): Promise<string> {
+  const threadKey = externalThreadId ?? "";
+  const { data } = await supabase
+    .from("chief_thread_summaries")
+    .select("summary_text")
+    .eq("workspace_id", workspaceId)
+    .eq("external_channel", "google_chat")
+    .eq("external_thread_id", threadKey)
+    .maybeSingle();
+  const t = data && typeof (data as { summary_text?: string }).summary_text === "string"
+    ? (data as { summary_text: string }).summary_text
+    : "";
+  return t.trim();
+}
+
+export async function upsertChiefThreadSummary(
+  supabase: Queryable,
+  workspaceId: string,
+  externalThreadId: string | null,
+  summaryText: string,
+) {
+  const threadKey = externalThreadId ?? "";
+  await supabase.from("chief_thread_summaries").upsert(
+    {
+      workspace_id: workspaceId,
+      external_channel: "google_chat",
+      external_thread_id: threadKey,
+      summary_text: summaryText.slice(0, 12000),
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "workspace_id,external_channel,external_thread_id" },
+  );
+}
+
+/** Converte clique em botão de card em comando texto (aprovar/reprovar/cancelar). */
+export function extractCardActionAsCommand(payload: GoogleChatEventPayload): string {
+  const action = payload.action;
+  const name = action?.actionMethodName?.trim();
+  if (!name) return "";
+  const params = new Map(
+    (action?.parameters ?? [])
+      .filter((p) => p.key)
+      .map((p) => [String(p.key), String(p.value ?? "")]),
+  );
+  const taskId = params.get("taskId") ?? params.get("task_id") ?? "";
+  const reason = params.get("reason") ?? params.get("comments") ?? "";
+  switch (name) {
+    case "approve_task":
+    case "chief_approve":
+      return taskId ? `aprovar ${taskId}` : "";
+    case "reject_task":
+    case "chief_reject":
+      return taskId ? `reprovar ${taskId}${reason ? ` ${reason}` : ""}` : "";
+    case "cancel_task":
+    case "chief_cancel":
+      return taskId ? `cancelar ${taskId}${reason ? ` ${reason}` : ""}` : "";
+    default:
+      return "";
+  }
 }
 
 export async function planChiefAgentResponse(input: {

@@ -206,3 +206,97 @@ export async function testOpenAiConnection(): Promise<{ ok: boolean; error?: str
   if (!res.ok) return { ok: false, error: await res.text() };
   return { ok: true };
 }
+
+/** Especialista por papel — saída estruturada para agent_runs.output_json */
+export async function runAgentSpecialistStage(input: {
+  role: string;
+  playbookExcerpt: string;
+  taskTitle: string;
+  contextJson: Record<string, unknown>;
+}): Promise<{ summary: string; structured: Record<string, unknown> }> {
+  const key = process.env.OPENAI_API_KEY;
+  const base = {
+    summary: `[${input.role}] Etapa registrada para «${input.taskTitle}».`,
+    structured: {
+      role: input.role,
+      highlights: Object.keys(input.contextJson).slice(0, 8),
+    },
+  };
+  if (!key) return base;
+
+  const body = {
+    model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content:
+          "Você é um agente especializado em marketing B2B. Responda em português do Brasil. Retorne apenas JSON válido com chaves summary (string curta) e structured (objeto com bullets, riscos, sugestões).",
+      },
+      {
+        role: "user",
+        content: `Papel: ${input.role}\nTítulo da peça: ${input.taskTitle}\nPlaybook (trecho):\n${input.playbookExcerpt.slice(0, 6000)}\nContexto anterior (JSON):\n${JSON.stringify(input.contextJson).slice(0, 8000)}`,
+      },
+    ],
+    response_format: { type: "json_object" },
+  };
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return base;
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) return base;
+  try {
+    const parsed = JSON.parse(text) as {
+      summary?: string;
+      structured?: Record<string, unknown>;
+    };
+    return {
+      summary: parsed.summary ?? base.summary,
+      structured: parsed.structured ?? base.structured,
+    };
+  } catch {
+    return base;
+  }
+}
+
+/**
+ * Gera imagem 1024x1024 (DALL·E 3) e devolve bytes PNG quando possível.
+ */
+export async function generateSocialImageBytes(input: {
+  prompt: string;
+}): Promise<Uint8Array | null> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return null;
+
+  const res = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "dall-e-3",
+      prompt: input.prompt.slice(0, 3500),
+      n: 1,
+      size: "1024x1024",
+      quality: "standard",
+      response_format: "b64_json",
+    }),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as {
+    data?: Array<{ b64_json?: string }>;
+  };
+  const b64 = data.data?.[0]?.b64_json;
+  if (!b64) return null;
+  return Buffer.from(b64, "base64");
+}

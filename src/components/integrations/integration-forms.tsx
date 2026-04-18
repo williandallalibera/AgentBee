@@ -275,6 +275,12 @@ export function IntegrationForms({
       <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
         <div className="space-y-2">
           <p className="text-sm font-medium text-gray-900 dark:text-white">Instagram</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            <a href="/api/oauth/instagram" className="text-[#3c8dbc] underline">
+              Conectar via Meta (OAuth)
+            </a>{" "}
+            — obtém token e tenta localizar o Instagram Business Account vinculado à página.
+          </p>
           <Label htmlFor="ig-user">IG User ID</Label>
           <Input
             id="ig-user"
@@ -301,6 +307,12 @@ export function IntegrationForms({
       <div className="space-y-4 rounded border border-gray-200 p-4 dark:border-gray-700">
         <div className="space-y-2">
           <p className="text-sm font-medium text-gray-900 dark:text-white">LinkedIn</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            <a href="/api/oauth/linkedin" className="text-[#3c8dbc] underline">
+              Conectar via LinkedIn (OAuth)
+            </a>{" "}
+            — salva o access token; informe abaixo o Organization ID (URN) para publicar.
+          </p>
           <Label htmlFor="li-org">Organization ID</Label>
           <Input
             id="li-org"

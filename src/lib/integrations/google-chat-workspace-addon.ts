@@ -90,5 +90,46 @@ export function normalizeChatWebhookPayload(raw: unknown): GoogleChatEventPayloa
     }
   }
 
+  if (c.cardClickedPayload && typeof c.cardClickedPayload === "object") {
+    const ccp = c.cardClickedPayload as Record<string, unknown>;
+    const rawAction = (ccp.action as Record<string, unknown> | undefined) ?? {};
+    const invoked = ccp.invokedFunction as Record<string, unknown> | undefined;
+    const actionSource =
+      Object.keys(rawAction).length > 0 ? rawAction : invoked ?? {};
+    const method =
+      typeof actionSource.actionMethodName === "string"
+        ? actionSource.actionMethodName
+        : typeof invoked?.name === "string"
+          ? invoked.name
+          : "";
+    const parameters: Array<{ key?: string; value?: string }> = [];
+    const rawParams = actionSource.parameters;
+    if (Array.isArray(rawParams)) {
+      for (const p of rawParams) {
+        if (p && typeof p === "object") {
+          const o = p as Record<string, unknown>;
+          const key = o.key != null ? String(o.key) : "";
+          const value = o.value != null ? String(o.value) : "";
+          if (key) parameters.push({ key, value });
+        }
+      }
+    }
+    const space =
+      (ccp.space as GoogleChatEventPayload["space"] | undefined) ??
+      (c.space as GoogleChatEventPayload["space"] | undefined);
+    return withRootToken(
+      {
+        type: "CARD_CLICKED",
+        space,
+        user: c.user as GoogleChatEventPayload["user"],
+        action: {
+          actionMethodName: method,
+          parameters,
+        },
+      } as GoogleChatEventPayload,
+      r,
+    );
+  }
+
   return raw as GoogleChatEventPayload;
 }

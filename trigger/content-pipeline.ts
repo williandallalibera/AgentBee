@@ -1,12 +1,16 @@
-import { task, wait } from "@trigger.dev/sdk/v3";
+import { task, wait, tasks } from "@trigger.dev/sdk/v3";
 import { createClient } from "@supabase/supabase-js";
 import {
   auditContent,
   generateContentProposal,
   generateCopyAndCarousel,
+  generateSocialImageBytes,
+  runAgentSpecialistStage,
 } from "../src/lib/integrations/openai";
 import { sendGoogleChatMessage } from "../src/lib/integrations/google-chat";
 import { sendApprovalEmail } from "../src/lib/integrations/email";
+import { ensureWorkspaceAgents, getAgentIdByRole } from "../src/lib/agents/ensure-workspace-agents";
+import { uploadSocialAssetPng } from "../src/lib/storage/social-art";
 
 type ApprovalDecision = {
   action: "approve" | "revision" | "new_direction" | "cancel";
@@ -101,20 +105,25 @@ export const contentPipeline = task({
       })
       .eq("id", payload.taskId);
 
-    const { data: researcher } = await supabase
-      .from("agents")
-      .select("id")
-      .eq("workspace_id", wsId)
-      .eq("role", "researcher")
-      .maybeSingle();
+    await ensureWorkspaceAgents(supabase, wsId);
 
-    if (researcher?.id) {
+    const researcherId = await getAgentIdByRole(supabase, wsId, "researcher");
+    const researchOut = await runAgentSpecialistStage({
+      role: "researcher",
+      playbookExcerpt,
+      taskTitle: taskRow.title,
+      contextJson: { campaign_objective: campaignObjective },
+    });
+    if (researcherId) {
       await supabase.from("agent_runs").insert({
-        agent_id: researcher.id,
+        agent_id: researcherId,
         task_id: payload.taskId,
         stage: "research",
         status: "success",
-        output_summary: "Pesquisa sintetizada (MVP).",
+        output_summary: researchOut.summary,
+        output_json: researchOut.structured,
+        input_json: { task_title: taskRow.title },
+        finished_at: new Date().toISOString(),
       });
     }
 
@@ -128,6 +137,28 @@ export const contentPipeline = task({
       taskTitle: taskRow.title,
       campaignObjective,
     });
+
+    const plannerId = await getAgentIdByRole(supabase, wsId, "planner");
+    const planOut = await runAgentSpecialistStage({
+      role: "planner",
+      playbookExcerpt,
+      taskTitle: taskRow.title,
+      contextJson: {
+        proposal_excerpt: proposal.summary_markdown.slice(0, 2500),
+        strategy: proposal.strategy_json,
+      },
+    });
+    if (plannerId) {
+      await supabase.from("agent_runs").insert({
+        agent_id: plannerId,
+        task_id: payload.taskId,
+        stage: "plan",
+        status: "success",
+        output_summary: planOut.summary,
+        output_json: planOut.structured,
+        finished_at: new Date().toISOString(),
+      });
+    }
 
     const { data: proposalRow, error: pErr } = await supabase
       .from("content_proposals")
@@ -319,12 +350,79 @@ export const contentPipeline = task({
 
     if (vErr || !versionRow) throw new Error(vErr?.message ?? "Versão não criada");
 
+    const copywriterId = await getAgentIdByRole(supabase, wsId, "copywriter");
+    const copySpec = await runAgentSpecialistStage({
+      role: "copywriter",
+      playbookExcerpt,
+      taskTitle: taskRow.title,
+      contextJson: {
+        copy_excerpt: gen.copy_markdown.slice(0, 4000),
+        carousel: gen.carousel_structure_json,
+      },
+    });
+    if (copywriterId) {
+      await supabase.from("agent_runs").insert({
+        agent_id: copywriterId,
+        task_id: payload.taskId,
+        stage: "copy_art",
+        status: "success",
+        output_summary: copySpec.summary,
+        output_json: copySpec.structured,
+        finished_at: new Date().toISOString(),
+      });
+    }
+
+    const artDirectorId = await getAgentIdByRole(supabase, wsId, "art_director");
+    const artBrief = await runAgentSpecialistStage({
+      role: "art_director",
+      playbookExcerpt,
+      taskTitle: taskRow.title,
+      contextJson: {
+        carousel: gen.carousel_structure_json,
+        copy_excerpt: gen.copy_markdown.slice(0, 1500),
+      },
+    });
+    let visualUrl: string | null = null;
+    const imageBytes = await generateSocialImageBytes({
+      prompt: `Imagem quadrada para post em rede social B2B, moderna e limpa, sem texto minúsculo ilegível. Conceito: ${artBrief.summary}. Peça: ${taskRow.title}.`,
+    });
+    if (imageBytes) {
+      visualUrl = await uploadSocialAssetPng({
+        supabase,
+        workspaceId: wsId,
+        taskId: payload.taskId,
+        bytes: imageBytes,
+      });
+    }
+    if (visualUrl) {
+      await supabase
+        .from("content_versions")
+        .update({ visual_draft_url: visualUrl })
+        .eq("id", versionRow.id);
+    }
+    if (artDirectorId) {
+      await supabase.from("agent_runs").insert({
+        agent_id: artDirectorId,
+        task_id: payload.taskId,
+        stage: "visual",
+        status: visualUrl ? "success" : "skipped",
+        output_summary: visualUrl
+          ? `Arte gerada: ${visualUrl}`
+          : "Arte não gerada (sem API de imagem ou falha de upload).",
+        output_json: { ...artBrief.structured, visual_draft_url: visualUrl },
+        finished_at: new Date().toISOString(),
+      });
+    }
+
+    const auditorId = await getAgentIdByRole(supabase, wsId, "auditor");
     await supabase.from("agent_runs").insert({
-      agent_id: researcher?.id ?? null,
+      agent_id: auditorId,
       task_id: payload.taskId,
       stage: "audit",
-      status: "success",
+      status: auditResult.ok ? "success" : "error",
       output_summary: auditResult.notes,
+      output_json: { ok: auditResult.ok, notes: auditResult.notes },
+      finished_at: new Date().toISOString(),
     });
 
     await supabase
@@ -472,13 +570,53 @@ export const contentPipeline = task({
       ? `${calendarItem.planned_date}T09:00:00.000Z`
       : null;
 
-    /** Publicação interna (fila). Integração real com APIs Instagram/LinkedIn é etapa posterior ao fluxo estável no chat. */
-    await supabase.from("publications").insert({
-      task_id: payload.taskId,
-      channel_type: calendarItem?.channel_type ?? "instagram",
-      scheduled_at: scheduledAt,
-      status: "pending",
-    });
+    const { data: versionForPub } = await supabase
+      .from("content_versions")
+      .select("visual_draft_url")
+      .eq("id", versionRow.id)
+      .maybeSingle();
+    const pubMedia: string[] = [];
+    const vu = versionForPub?.visual_draft_url;
+    if (typeof vu === "string" && vu.startsWith("http")) {
+      pubMedia.push(vu);
+    }
+
+    const { data: publicationRow } = await supabase
+      .from("publications")
+      .insert({
+        task_id: payload.taskId,
+        channel_type: calendarItem?.channel_type ?? "instagram",
+        scheduled_at: scheduledAt,
+        status: "pending",
+        media_urls_json: pubMedia,
+      })
+      .select("id")
+      .single();
+
+    const publisherId = await getAgentIdByRole(supabase, wsId, "publisher");
+    if (publisherId) {
+      await supabase.from("agent_runs").insert({
+        agent_id: publisherId,
+        task_id: payload.taskId,
+        stage: "publish",
+        status: "success",
+        output_summary: publicationRow?.id
+          ? `Publicação enfileirada (${publicationRow.id})`
+          : "Publicação enfileirada",
+        output_json: { publication_id: publicationRow?.id ?? null },
+        finished_at: new Date().toISOString(),
+      });
+    }
+
+    if (publicationRow?.id && process.env.TRIGGER_SECRET_KEY?.trim()) {
+      try {
+        await tasks.trigger("publish-social", {
+          publicationId: publicationRow.id as string,
+        });
+      } catch (e) {
+        console.warn("publish_social_trigger_failed", e);
+      }
+    }
 
     await supabase
       .from("content_tasks")
@@ -516,7 +654,7 @@ export const contentPipeline = task({
           calendarItem?.planned_date
             ? `Data planejada no calendário: ${calendarItem.planned_date} (${calendarItem.channel_type ?? "canal"}).`
             : "Sem data no calendário — revisem no painel.",
-          "Publicação na fila interna; integração direta com redes sociais quando estiver configurada.",
+          "Publicação disparada na fila (task publish-social) quando Trigger e integrações Instagram/LinkedIn estiverem configurados.",
         ],
       });
     }
