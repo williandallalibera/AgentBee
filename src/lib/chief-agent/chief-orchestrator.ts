@@ -17,6 +17,19 @@ import {
 } from "@/lib/chief-agent/agent";
 import { executeChiefAgentPlan, type ServiceSupabase } from "@/lib/chief-agent/chief-google-chat-execution";
 
+/** Ferramentas só-leitura: podem rodar em paralelo na mesma rodada do modelo. */
+const CHIEF_READ_ONLY_TOOLS = new Set([
+  "chief_refresh_snapshot",
+  "chief_list_pending_approvals",
+  "chief_list_task_status",
+  "chief_list_campaigns",
+  "chief_list_upcoming_posts",
+  "chief_get_task_detail",
+  "chief_explain",
+  "chief_list_failures",
+  "chief_focus",
+]);
+
 type ChatMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
@@ -267,7 +280,71 @@ const CHIEF_TOOLS = [
             },
           },
         },
-        required: ["operation"],
+               required: ["operation"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "chief_preview_post",
+      description:
+        "Envia um card no Google Chat com preview da copy e da arte (se existir) para uma content task.",
+      parameters: {
+        type: "object",
+        properties: { task_id: { type: "string" } },
+        required: ["task_id"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "chief_explain",
+      description:
+        "Explica um tópico usando o playbook e o snapshot (sem SQL livre).",
+      parameters: {
+        type: "object",
+        properties: { topic: { type: "string" } },
+        required: ["topic"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "chief_list_failures",
+      description: "Lista publicações com falha e agent_runs com erro nas últimas horas.",
+      parameters: {
+        type: "object",
+        properties: { since_hours: { type: "integer", description: "1 a 168, default 48" } },
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "chief_retry_publication",
+      description: "Reenfileira uma publicação falha (dispara publish-social).",
+      parameters: {
+        type: "object",
+        properties: { publication_id: { type: "string" } },
+        required: ["publication_id"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "chief_focus",
+      description:
+        "Retorna detalhe expandido de uma task e/ou campanha para fixar contexto na conversa.",
+      parameters: {
+        type: "object",
+        properties: {
+          task_id: { type: "string" },
+          campaign_id: { type: "string" },
+        },
       },
     },
   },
@@ -289,6 +366,11 @@ const CHIEF_TOOL_PLAN_FALLBACK: ChiefAgentPlan = {
   date: null,
   comments: null,
   campaignDraft: null,
+  publicationId: null,
+  explainTopic: null,
+  failuresSinceHours: null,
+  focusTaskId: null,
+  focusCampaignId: null,
   confidence: "low",
 };
 
@@ -318,7 +400,7 @@ async function executeChiefTool(
     switch (name) {
       case "chief_refresh_snapshot": {
         snapshotCache = await loadChiefAgentSnapshot(ctx.supabase, ctx.workspaceId);
-        return JSON.stringify(snapshotCache, null, 0).slice(0, 14000);
+        return JSON.stringify(snapshotCache, null, 0).slice(0, chiefSnapshotJsonChars());
       }
       case "chief_list_pending_approvals":
         return formatPendingApprovalsReply(snapshot);
@@ -483,6 +565,42 @@ async function executeChiefTool(
         }
         return JSON.stringify({ error: "operation inválida" });
       }
+      case "chief_preview_post":
+        return await runNormalizedPlan(ctx, snapshot, {
+          intent: "chief_preview_post",
+          reply: "Enviando preview.",
+          taskId: String(rawArgs.task_id ?? "").trim() || null,
+          confidence: "high",
+        });
+      case "chief_explain":
+        return await runNormalizedPlan(ctx, snapshot, {
+          intent: "chief_explain",
+          reply: "Segue explicação.",
+          explainTopic: rawArgs.topic != null ? String(rawArgs.topic) : null,
+          confidence: "high",
+        });
+      case "chief_list_failures":
+        return await runNormalizedPlan(ctx, snapshot, {
+          intent: "chief_list_failures",
+          reply: "Falhas recentes:",
+          failuresSinceHours: clampInt(rawArgs.since_hours, 48, 1, 168),
+          confidence: "high",
+        });
+      case "chief_retry_publication":
+        return await runNormalizedPlan(ctx, snapshot, {
+          intent: "retry_publication",
+          reply: "Reenfileirando publicação.",
+          publicationId: String(rawArgs.publication_id ?? "").trim() || null,
+          confidence: "high",
+        });
+      case "chief_focus":
+        return await runNormalizedPlan(ctx, snapshot, {
+          intent: "chief_focus",
+          reply: "Contexto em foco:",
+          focusTaskId: String(rawArgs.task_id ?? "").trim() || null,
+          focusCampaignId: String(rawArgs.campaign_id ?? "").trim() || null,
+          confidence: "high",
+        });
       default:
         return JSON.stringify({ error: `ferramenta desconhecida: ${name}` });
     }
@@ -516,15 +634,94 @@ function chiefToolsDisabled() {
   return process.env.CHIEF_USE_TOOLS?.trim() === "false";
 }
 
+function chiefMaxMessageChars() {
+  const raw = process.env.CHIEF_MAX_MESSAGE_CHARS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 10_000;
+  return Number.isFinite(n) && n >= 2000 && n <= 32_000 ? n : 10_000;
+}
+
+function chiefSnapshotJsonChars() {
+  const raw = process.env.CHIEF_SNAPSHOT_JSON_CHARS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 36_000;
+  return Number.isFinite(n) && n >= 8000 && n <= 100_000 ? n : 36_000;
+}
+
+function chiefThreadSummaryChars() {
+  const raw = process.env.CHIEF_THREAD_SUMMARY_CHARS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 10_000;
+  return Number.isFinite(n) && n >= 2000 && n <= 24_000 ? n : 10_000;
+}
+
+function chiefToolRoundLimit() {
+  const raw = process.env.CHIEF_TOOL_ROUNDS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 12;
+  return Number.isFinite(n) && n >= 3 && n <= 24 ? n : 12;
+}
+
+function trimHistoryText(text: string, max: number) {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n…[truncado — aumente CHIEF_MAX_MESSAGE_CHARS se precisar do texto completo]`;
+}
+
 function buildHistoryMessages(history: ConversationTurn[]) {
+  const max = chiefMaxMessageChars();
   const lines: ChatMessage[] = [];
   for (const turn of history) {
-    lines.push({ role: "user", content: turn.user });
+    lines.push({ role: "user", content: trimHistoryText(turn.user, max) });
     if (turn.agent) {
-      lines.push({ role: "assistant", content: turn.agent });
+      lines.push({ role: "assistant", content: trimHistoryText(turn.agent, max) });
     }
   }
   return lines;
+}
+
+function parseToolArgs(tc: { function: { arguments: string } }) {
+  try {
+    return JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+async function runToolCallsWithParallelReads(
+  toolCalls: NonNullable<ChatMessage["tool_calls"]>,
+  ctx: OrchestratorCtx,
+): Promise<Map<string, string>> {
+  const results = new Map<string, string>();
+  const ordered = toolCalls.filter((tc) => tc.type === "function");
+  const reads = ordered.filter((tc) => CHIEF_READ_ONLY_TOOLS.has(tc.function.name));
+  const writes = ordered.filter((tc) => !CHIEF_READ_ONLY_TOOLS.has(tc.function.name));
+
+  if (reads.length > 0) {
+    const readOut = await Promise.all(
+      reads.map(async (tc) => {
+        const out = await executeChiefTool(tc.function.name, parseToolArgs(tc), ctx);
+        return { id: tc.id, out };
+      }),
+    );
+    for (const { id, out } of readOut) {
+      results.set(id, out);
+    }
+  }
+
+  for (const tc of writes) {
+    const out = await executeChiefTool(tc.function.name, parseToolArgs(tc), ctx);
+    results.set(tc.id, out);
+  }
+
+  return results;
+}
+
+/** Limite (ms) para responder cedo no webhook do Google Chat enquanto OpenAI/tools terminam em background. */
+export function chiefGoogleChatAckDeadlineMs() {
+  const raw = process.env.CHIEF_GOOGLE_CHAT_ACK_MS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 3000;
+  return Number.isFinite(n) && n >= 500 && n <= 25_000 ? n : 3000;
+}
+
+/** Mensagem síncrona quando o turno excede o limite — o resultado completo segue via webhook do espaço. */
+export function chiefGoogleChatAckMessage() {
+  return "Anotado, trabalhando nisso...";
 }
 
 export async function runChiefGoogleChatTurn(input: {
@@ -568,19 +765,28 @@ export async function runChiefGoogleChatTurn(input: {
     process.env.OPENAI_MODEL ??
     "gpt-4o-mini";
 
+  const sumLim = chiefThreadSummaryChars();
   const summaryBlock =
     input.threadSummary.trim().length > 0
-      ? `\nResumo da conversa até agora:\n${input.threadSummary.slice(0, 4000)}\n`
+      ? `\nResumo de contexto (thread longa — use junto com o histórico recente):\n${input.threadSummary.slice(0, sumLim)}\n`
       : "";
+
+  const snapLim = chiefSnapshotJsonChars();
+  const toneLine = snapshot.chiefPersonaTone?.trim()
+    ? `Tom de voz do chefe (persona): ${snapshot.chiefPersonaTone.trim().slice(0, 500)}`
+    : "";
 
   const systemPrompt = [
     "Você é o Agente Chefe do AgentBee no Google Chat. Português do Brasil.",
+    ...(toneLine ? [toneLine] : []),
     "Use as ferramentas para dados reais e ações. Nunca invente IDs ou status.",
-    "Depois de obter resultados das ferramentas, responda ao usuário de forma clara e objetiva.",
-    "Se o pedido for apenas conversa ou dúvida geral, responda sem ferramentas.",
+    "Multitarefa: se o usuário pedir várias coisas de uma vez (ex.: «status, pendências e próximas postagens»), na **mesma** resposta emita **várias** function calls — uma por necessidade — em paralelo quando forem consultas (listagens). Não responda só a primeira parte.",
+    "Depois de obter resultados das ferramentas, una tudo numa resposta única, organizada (títulos curtos ou bullets).",
+    "Se o pedido for apenas conversa ou dúvida geral sem dado do sistema, responda sem ferramentas.",
     "Para operações muito grandes (muitas campanhas/slots), use chief_defer_heavy_operation.",
+    "Ações que alteram estado (aprovar, criar campanha, etc.) podem ir na mesma rodada que leituras, mas evite misturar duas escritas dependentes sem ver o resultado da primeira.",
     summaryBlock,
-    `Snapshot inicial (pode estar desatualizado — use chief_refresh_snapshot se necessário): ${JSON.stringify(snapshot).slice(0, 12000)}`,
+    `Snapshot inicial (pode estar desatualizado — use chief_refresh_snapshot após mudanças): ${JSON.stringify(snapshot).slice(0, snapLim)}`,
   ].join("\n");
 
   const messages: ChatMessage[] = [
@@ -598,7 +804,7 @@ export async function runChiefGoogleChatTurn(input: {
     googleChatWebhook: input.googleChatWebhook,
   };
 
-  const maxIterations = 5;
+  const maxIterations = chiefToolRoundLimit();
   let lastAssistantText: string | null = null;
 
   for (let iter = 0; iter < maxIterations; iter += 1) {
@@ -613,7 +819,8 @@ export async function runChiefGoogleChatTurn(input: {
         messages,
         tools: CHIEF_TOOLS,
         tool_choice: "auto",
-        temperature: 0.4,
+        parallel_tool_calls: true,
+        temperature: 0.35,
       }),
     });
 
@@ -650,19 +857,13 @@ export async function runChiefGoogleChatTurn(input: {
       tool_calls: toolCalls,
     });
 
+    const resultById = await runToolCallsWithParallelReads(toolCalls, ctx);
     for (const tc of toolCalls) {
       if (tc.type !== "function") continue;
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>;
-      } catch {
-        args = {};
-      }
-      const out = await executeChiefTool(tc.function.name, args, ctx);
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: out,
+        content: resultById.get(tc.id) ?? "",
       });
     }
   }
@@ -697,12 +898,14 @@ export async function maybeSummarizeChiefThread(input: {
   apiKey: string | null;
   model: string | null;
 }) {
-  if (!input.apiKey?.trim() || input.history.length < 12) return;
+  const minTurns = Number.parseInt(process.env.CHIEF_SUMMARY_MIN_TURNS?.trim() ?? "8", 10);
+  const threshold = Number.isFinite(minTurns) && minTurns >= 4 ? minTurns : 8;
+  if (!input.apiKey?.trim() || input.history.length < threshold) return;
 
   const model =
     input.model ?? process.env.OPENAI_CHIEF_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini";
   const transcript = input.history
-    .slice(-20)
+    .slice(-36)
     .map((t) => `U: ${t.user}\nA: ${t.agent ?? "—"}`)
     .join("\n");
 
@@ -718,10 +921,10 @@ export async function maybeSummarizeChiefThread(input: {
         messages: [
           {
             role: "user",
-            content: `Resuma em até 8 linhas o fio operacional abaixo (decisões, IDs citados, pendências). Português BR.\n\n${transcript.slice(0, 12000)}`,
+            content: `Resuma o fio operacional abaixo em até 18 linhas curtas: decisões, IDs (UUID) citados, pendências, campanhas e próximos passos. Português BR. Preserve nomes próprios e números de task.\n\n${transcript.slice(0, 28_000)}`,
           },
         ],
-        temperature: 0.3,
+        temperature: 0.25,
       }),
     });
     if (!res.ok) return;
@@ -748,7 +951,7 @@ async function upsertChiefThreadSummaryFromModule(
       workspace_id: workspaceId,
       external_channel: "google_chat",
       external_thread_id: threadKey,
-      summary_text: summaryText.slice(0, 12000),
+      summary_text: summaryText.slice(0, 20_000),
       updated_at: new Date().toISOString(),
     },
     { onConflict: "workspace_id,external_channel,external_thread_id" },

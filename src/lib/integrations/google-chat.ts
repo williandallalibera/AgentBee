@@ -18,6 +18,56 @@ type GoogleChatVerificationResult = {
   error?: string;
 };
 
+/** Cards interativos (aprovação etc.) — desligue com CHIEF_CARDS_ENABLED=false. */
+export function chiefCardsEnabled() {
+  return process.env.CHIEF_CARDS_ENABLED?.trim() !== "false";
+}
+
+/**
+ * Envia card(s) via webhook do espaço. Em falha ou com cards desligados, usa texto (fallback).
+ */
+export async function sendGoogleChatCard(
+  webhookUrl: string,
+  cardBody: Record<string, unknown>,
+  fallback: {
+    title: string;
+    subtitle?: string;
+    lines: string[];
+    linkUrl?: string;
+    linkLabel?: string;
+  },
+): Promise<{ ok: boolean; error?: string; usedFallback?: boolean }> {
+  if (!chiefCardsEnabled()) {
+    const r = await sendGoogleChatMessage(webhookUrl, fallback);
+    return { ...r, usedFallback: true };
+  }
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=UTF-8" },
+      body: JSON.stringify(cardBody),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      const r = await sendGoogleChatMessage(webhookUrl, fallback);
+      return {
+        ok: r.ok,
+        error: r.ok ? undefined : `${r.error ?? ""} | card_error: ${errText.slice(0, 400)}`,
+        usedFallback: r.ok,
+      };
+    }
+    return { ok: true };
+  } catch (e) {
+    const r = await sendGoogleChatMessage(webhookUrl, fallback);
+    return {
+      ok: r.ok,
+      error: r.error ?? (e instanceof Error ? e.message : "Erro de rede"),
+      usedFallback: r.ok,
+    };
+  }
+}
+
 export async function sendGoogleChatMessage(
   webhookUrl: string,
   payload: {

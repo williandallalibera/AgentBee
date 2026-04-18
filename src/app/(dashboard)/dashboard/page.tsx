@@ -68,7 +68,15 @@ function statusLabel(status: string) {
   return "Em execucao";
 }
 
-function MiniBars({ values, color }: { values: number[]; color: string }) {
+function MiniBars({
+  values,
+  color,
+  bottomLabels,
+}: {
+  values: number[];
+  color: string;
+  bottomLabels: string[];
+}) {
   return (
     <div className="flex h-48 items-end gap-3">
       {values.map((value, index) => (
@@ -80,7 +88,7 @@ function MiniBars({ values, color }: { values: number[]; color: string }) {
             />
           </div>
           <span className="text-xs text-gray-500">
-            {["Jan", "Fev", "Mar", "Abr", "Mai", "Jun"][index]}
+            {bottomLabels[index] ?? `·`}
           </span>
         </div>
       ))}
@@ -127,18 +135,23 @@ function renderDashboard({
   agents,
   recentTasks,
   local,
+  pubSeriesNormalized,
+  pubDayLabels,
+  pipelineSeriesNormalized,
+  pipelineLabels,
+  deliveryRatePercent,
 }: {
   pendingCount: number;
   activeTasks: number;
   agents: number;
   recentTasks: DashboardTask[];
   local: boolean;
+  pubSeriesNormalized: number[];
+  pubDayLabels: string[];
+  pipelineSeriesNormalized: number[];
+  pipelineLabels: string[];
+  deliveryRatePercent: number;
 }) {
-  const completedTasks =
-    recentTasks.filter((task) => ["published", "approved_final"].includes(task.status))
-      .length || 1;
-  const requestsSeries = [48, 58, 41, 65, 52, 69];
-  const performanceSeries = [35, 62, 54, 73, 66, 58];
 
   return (
     <div className="space-y-6">
@@ -176,10 +189,10 @@ function renderDashboard({
         })}
         {renderStatCard({
           label: "Taxa de Entrega",
-          value: `${Math.min(99, 90 + completedTasks)}%`,
+          value: `${deliveryRatePercent}%`,
           icon: CheckCircle2,
           color: "bg-[#605ca8]",
-          footer: "Conteúdos concluídos no período",
+          footer: "Publicados / tarefas totais (workspace)",
         })}
       </div>
 
@@ -187,24 +200,31 @@ function renderDashboard({
         <section className="rounded bg-white p-6 shadow dark:bg-card">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">
-              Requisições por mês
+              Publicações (últimos 14 dias)
             </h3>
             <span className="rounded bg-primary px-2 py-1 text-xs text-white">
-              2026
+              ao vivo
             </span>
           </div>
           <div className="rounded border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-card">
-            <MiniArea values={requestsSeries} />
+            <MiniArea values={pubSeriesNormalized} />
           </div>
+          <p className="mt-2 text-center text-[10px] text-muted-foreground">
+            {pubDayLabels.slice(0, 4).join(" · ")} … {pubDayLabels[pubDayLabels.length - 1]}
+          </p>
         </section>
 
         <section className="rounded bg-white p-6 shadow dark:bg-card">
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">
-              Performance dos agentes
+              Tarefas por etapa do pipeline
             </h3>
           </div>
-          <MiniBars values={performanceSeries} color="#00a65a" />
+          <MiniBars
+            values={pipelineSeriesNormalized}
+            color="#00a65a"
+            bottomLabels={pipelineLabels}
+          />
         </section>
       </div>
 
@@ -382,6 +402,14 @@ export default async function DashboardPage() {
       agents: localAgents.length,
       recentTasks: localTasks,
       local: true,
+      pubSeriesNormalized: [48, 58, 41, 65, 52, 69, 55, 60, 44, 50, 62, 58, 70, 66],
+      pubDayLabels: Array.from({ length: 14 }, (_, i) => `${i + 1}`),
+      pipelineSeriesNormalized: [35, 62, 54, 73, 66, 58],
+      pipelineLabels: ["R", "P", "A1", "C", "A2", "Ag"],
+      deliveryRatePercent: Math.min(
+        99,
+        70 + localTasks.filter((t) => t.status === "published").length * 5,
+      ),
     });
   }
 
@@ -421,11 +449,63 @@ export default async function DashboardPage() {
     )
     .slice(0, 5);
 
+  const dayKeys: string[] = [];
+  for (let i = 13; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - i);
+    dayKeys.push(d.toISOString().slice(0, 10));
+  }
+  const fourteenStart = `${dayKeys[0]}T00:00:00.000Z`;
+  const { data: publishedRows } = await supabase
+    .from("publications")
+    .select("published_at")
+    .eq("workspace_id", workspaceId)
+    .eq("status", "published")
+    .not("published_at", "is", null)
+    .gte("published_at", fourteenStart);
+
+  const byDay = new Map(dayKeys.map((d) => [d, 0]));
+  for (const p of publishedRows ?? []) {
+    const day = (p.published_at as string).slice(0, 10);
+    if (byDay.has(day)) {
+      byDay.set(day, (byDay.get(day) ?? 0) + 1);
+    }
+  }
+  const pubCounts = dayKeys.map((d) => byDay.get(d) ?? 0);
+  const pubMax = Math.max(1, ...pubCounts);
+  const pubSeriesNormalized = pubCounts.map((n) => Math.round((n / pubMax) * 100));
+  const pubDayLabels = dayKeys.map((d) => `${d.slice(8, 10)}/${d.slice(5, 7)}`);
+
+  const buckets = [
+    { status: "researching", short: "Pesq" },
+    { status: "planning", short: "Plan" },
+    { status: "awaiting_initial_approval", short: "A1" },
+    { status: "creating", short: "Prod" },
+    { status: "awaiting_final_approval", short: "A2" },
+    { status: "scheduled", short: "Ag" },
+  ] as const;
+  const taskList = allTasks ?? [];
+  const pipeCounts = buckets.map((b) => taskList.filter((t) => t.status === b.status).length);
+  const pipeMax = Math.max(1, ...pipeCounts);
+  const pipelineSeriesNormalized = pipeCounts.map((n) =>
+    Math.round((n / pipeMax) * 100),
+  );
+  const pipelineLabels = buckets.map((b) => b.short);
+
+  const totalTasks = taskList.length || 1;
+  const publishedTasks = taskList.filter((t) => t.status === "published").length;
+  const deliveryRatePercent = Math.min(100, Math.round((publishedTasks / totalTasks) * 100));
+
   return renderDashboard({
     pendingCount,
     activeTasks,
     agents: agents ?? 0,
     recentTasks,
     local: false,
+    pubSeriesNormalized,
+    pubDayLabels,
+    pipelineSeriesNormalized,
+    pipelineLabels,
+    deliveryRatePercent,
   });
 }

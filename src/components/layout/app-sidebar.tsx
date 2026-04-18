@@ -20,26 +20,84 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const nav = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/team", label: "Agentes de IA", icon: Bot, badge: "6" },
-  { href: "/observability", label: "Analytics", icon: BarChart3 },
-  { href: "/playbook", label: "Playbook", icon: BookOpen },
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+};
+
+/**
+ * Operação — fluxo lógico: visão → planejar (campanha/calendário) → produzir → aprovar → acompanhar.
+ * Configuração — tudo que define o workspace antes ou ao lado do dia a dia.
+ */
+const operationNav: NavItem[] = [
+  { href: "/dashboard", label: "Visão geral", icon: LayoutDashboard },
   { href: "/campaigns", label: "Campanhas", icon: CalendarDays },
-  { href: "/calendar", label: "Calendário", icon: CalendarRange },
+  { href: "/calendar", label: "Calendário editorial", icon: CalendarRange },
   { href: "/content", label: "Conteúdo", icon: FileText },
   { href: "/approvals", label: "Aprovações", icon: ClipboardList },
-  { href: "/operations", label: "Operações", icon: Workflow },
-  { href: "/logs", label: "Logs", icon: Activity },
-  { href: "/integrations", label: "Integrações", icon: Plug },
-  { href: "/settings/ai", label: "Config IA", icon: Settings2 },
-  { href: "/settings/users", label: "Usuários", icon: Users },
+  { href: "/operations", label: "Filas e pipeline", icon: Workflow },
+  { href: "/observability", label: "Métricas", icon: BarChart3 },
+  { href: "/logs", label: "Logs de auditoria", icon: Activity },
 ];
+
+const configurationNav: NavItem[] = [
+  { href: "/playbook", label: "Playbook e voz", icon: BookOpen },
+  { href: "/team", label: "Time de agentes", icon: Bot },
+  { href: "/integrations", label: "Integrações", icon: Plug },
+  { href: "/settings/ai", label: "Modelos e IA", icon: Settings2 },
+  { href: "/settings/users", label: "Usuários do workspace", icon: Users },
+];
+
+function NavLinks({
+  items,
+  pathname,
+  onNavigate,
+  pendingApprovalsCount = 0,
+}: {
+  items: NavItem[];
+  pathname: string;
+  onNavigate?: () => void;
+  pendingApprovalsCount?: number;
+}) {
+  return items.map((item) => {
+    const Icon = item.icon;
+    const active =
+      pathname === item.href ||
+      (item.href !== "/dashboard" && pathname.startsWith(item.href));
+    const badge =
+      item.href === "/approvals" && pendingApprovalsCount > 0
+        ? pendingApprovalsCount
+        : null;
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        onClick={() => onNavigate?.()}
+        className={cn(
+          "flex items-center gap-3 border-l-[3px] px-4 py-2.5 text-sm transition-colors",
+          active
+            ? "border-l-primary bg-sidebar-accent text-white"
+            : "border-l-transparent text-sidebar-foreground hover:bg-sidebar-accent hover:text-white",
+        )}
+      >
+        <Icon className="h-5 w-5 shrink-0" />
+        <span className="min-w-0 flex-1 leading-snug">{item.label}</span>
+        {badge != null ? (
+          <span className="shrink-0 rounded-full bg-[#dd4b39] px-2 py-0.5 text-[10px] font-semibold text-white">
+            {badge > 99 ? "99+" : badge}
+          </span>
+        ) : null}
+      </Link>
+    );
+  });
+}
 
 export function AppSidebar({
   isOpen,
   onNavigate,
   currentUser,
+  pendingApprovalsCount = 0,
 }: {
   isOpen: boolean;
   onNavigate?: () => void;
@@ -47,6 +105,7 @@ export function AppSidebar({
     name: string;
     email: string;
   };
+  pendingApprovalsCount?: number;
 }) {
   const pathname = usePathname();
   const displayName = currentUser?.name || "Kolmena Brand";
@@ -104,36 +163,20 @@ export function AppSidebar({
       </div>
 
       <nav className="flex-1 overflow-y-auto py-2">
-        <div className="px-3 py-2 text-xs font-semibold uppercase text-[#4b646f]">
-          Menu Principal
+        <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-[#4b646f]">
+          Operação
         </div>
-        {nav.map((item) => {
-          const Icon = item.icon;
-          const active =
-            pathname === item.href ||
-            (item.href !== "/dashboard" && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={() => onNavigate?.()}
-              className={cn(
-                "flex items-center gap-3 border-l-[3px] px-4 py-2.5 text-sm transition-colors",
-                active
-                  ? "border-l-primary bg-sidebar-accent text-white"
-                  : "border-l-transparent text-sidebar-foreground hover:bg-sidebar-accent hover:text-white",
-              )}
-            >
-              <Icon className="h-5 w-5" />
-              <span className="flex-1">{item.label}</span>
-              {"badge" in item && item.badge ? (
-                <span className="rounded-full bg-[#00a65a] px-2 py-0.5 text-xs text-white">
-                  {item.badge}
-                </span>
-              ) : null}
-            </Link>
-          );
-        })}
+        <NavLinks
+          items={operationNav}
+          pathname={pathname}
+          onNavigate={onNavigate}
+          pendingApprovalsCount={pendingApprovalsCount}
+        />
+
+        <div className="mt-4 border-t border-sidebar-border/60 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-[#4b646f]">
+          Configuração
+        </div>
+        <NavLinks items={configurationNav} pathname={pathname} onNavigate={onNavigate} />
       </nav>
       <div className="border-t border-sidebar-border px-4 py-3 text-xs text-sidebar-foreground">
         Marketing MVP

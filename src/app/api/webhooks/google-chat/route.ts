@@ -1,8 +1,9 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import {
   buildGoogleChatAudienceCandidates,
   resolvePublishedGoogleChatEndpoint,
+  sendGoogleChatMessage,
   verifyGoogleChatRequest,
 } from "@/lib/integrations/google-chat";
 import {
@@ -12,6 +13,7 @@ import {
 } from "@/lib/integrations/google-chat-workspace-addon";
 import {
   captureObservedGoogleChatSpace,
+  chiefHistoryLimit,
   extractCardActionAsCommand,
   extractIncomingText,
   formatHelpReply,
@@ -22,10 +24,11 @@ import {
   type GoogleChatEventPayload,
 } from "@/lib/chief-agent/agent";
 import {
+  chiefGoogleChatAckDeadlineMs,
+  chiefGoogleChatAckMessage,
   maybeSummarizeChiefThread,
   runChiefGoogleChatTurn,
 } from "@/lib/chief-agent/chief-orchestrator";
-
 /** Limite de tempo no edge/serverless (OpenAI + Supabase deve caber em <30s para o Google). */
 export const maxDuration = 60;
 
@@ -240,7 +243,10 @@ export async function POST(request: Request) {
       model?: string;
     };
 
-    const { reply, intent } = await runChiefGoogleChatTurn({
+    const ackMs = chiefGoogleChatAckDeadlineMs();
+    const ackText = chiefGoogleChatAckMessage();
+
+    const turnPromise = runChiefGoogleChatTurn({
       supabase,
       workspaceId,
       text,
@@ -254,37 +260,89 @@ export async function POST(request: Request) {
       googleChatWebhook,
     });
 
-    console.info("google_chat_reply_sent", {
-      workspaceId,
-      intent,
-      thread: Boolean(externalThreadId),
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      setTimeout(() => resolve("timeout"), ackMs);
     });
 
-    await supabase.from("chief_agent_conversations").insert({
-      workspace_id: workspaceId,
-      external_channel: "google_chat",
-      external_thread_id: externalThreadId,
-      message_text: text,
-      intent,
-      response_summary: reply,
+    const raced = await Promise.race([
+      turnPromise.then((result) => ({ kind: "ready" as const, result })),
+      timeoutPromise.then(() => ({ kind: "timeout" as const })),
+    ]);
+
+    async function persistChiefTurn(reply: string, intent: string) {
+      await supabase.from("chief_agent_conversations").insert({
+        workspace_id: workspaceId,
+        external_channel: "google_chat",
+        external_thread_id: externalThreadId,
+        message_text: text,
+        intent,
+        response_summary: reply,
+      });
+
+      const historyAfter = await loadChiefConversationHistory(
+        supabase,
+        workspaceId,
+        externalThreadId,
+        chiefHistoryLimit(),
+      );
+      void maybeSummarizeChiefThread({
+        supabase,
+        workspaceId,
+        externalThreadId,
+        history: historyAfter,
+        apiKey: openAiConfig.api_key ?? null,
+        model: openAiConfig.model ?? null,
+      });
+    }
+
+    if (raced.kind === "ready") {
+      const { reply, intent } = raced.result;
+      console.info("google_chat_reply_sent", {
+        workspaceId,
+        intent,
+        thread: Boolean(externalThreadId),
+        deferred: false,
+      });
+      await persistChiefTurn(reply, intent);
+      return jsonMessage(reply);
+    }
+
+    after(async () => {
+      try {
+        const { reply, intent } = await turnPromise;
+        console.info("google_chat_reply_sent", {
+          workspaceId,
+          intent,
+          thread: Boolean(externalThreadId),
+          deferred: true,
+        });
+        await persistChiefTurn(reply, intent);
+        const hook = googleChatWebhook?.trim();
+        if (hook) {
+          const sent = await sendGoogleChatMessage(hook, {
+            title: "AgentBee",
+            lines: [reply],
+          });
+          if (!sent.ok) {
+            console.warn("google_chat_deferred_reply_failed", sent.error);
+          }
+        } else {
+          console.warn("google_chat_deferred_no_webhook");
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Falha inesperada ao processar a conversa.";
+        const hook = googleChatWebhook?.trim();
+        if (hook) {
+          await sendGoogleChatMessage(hook, {
+            title: "AgentBee",
+            lines: [`Tive um problema ao processar isso agora: ${message}`],
+          });
+        }
+      }
     });
 
-    const historyAfter = await loadChiefConversationHistory(
-      supabase,
-      workspaceId,
-      externalThreadId,
-      32,
-    );
-    void maybeSummarizeChiefThread({
-      supabase,
-      workspaceId,
-      externalThreadId,
-      history: historyAfter,
-      apiKey: openAiConfig.api_key ?? null,
-      model: openAiConfig.model ?? null,
-    });
-
-    return jsonMessage(reply);
+    return jsonMessage(ackText);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Falha inesperada ao processar a conversa.";

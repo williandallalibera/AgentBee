@@ -1,5 +1,6 @@
 "use server";
 
+import type { ApprovalsQueueRow } from "@/types/approvals-queue";
 import { requireWorkspaceMember } from "@/lib/auth/session";
 import { wait } from "@trigger.dev/sdk/v3";
 import { revalidatePath } from "next/cache";
@@ -117,12 +118,12 @@ export async function submitApprovalDecision(input: {
   return { ok: true };
 }
 
-export async function listPendingApprovalsForUser() {
+export async function listPendingApprovalsForUser(): Promise<ApprovalsQueueRow[]> {
   const { supabase, workspaceId } = await requireWorkspaceMember();
 
   const { data: tasks } = await supabase
     .from("content_tasks")
-    .select("id, title, status")
+    .select("id, title, status, campaign_id, campaigns(id, name)")
     .eq("workspace_id", workspaceId);
 
   const ids = tasks?.map((t) => t.id) ?? [];
@@ -137,8 +138,22 @@ export async function listPendingApprovalsForUser() {
 
   const taskMap = new Map(tasks?.map((t) => [t.id, t]) ?? []);
 
-  return (approvals ?? []).map((a) => ({
-    ...a,
-    task: taskMap.get(a.task_id),
-  }));
+  return (approvals ?? []).map((a) => {
+    const task = taskMap.get(a.task_id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const t = task as any;
+    const campaign =
+      t?.campaigns && typeof t.campaigns === "object"
+        ? { id: String(t.campaigns.id), name: String(t.campaigns.name ?? "") }
+        : null;
+    return {
+      ...a,
+      task: task
+        ? {
+            ...task,
+            campaign,
+          }
+        : undefined,
+    };
+  });
 }

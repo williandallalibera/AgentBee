@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { DashboardFrame } from "@/components/layout/dashboard-frame";
-import { getSessionUser } from "@/lib/auth/session";
+import { getActiveWorkspaceId, getSessionUser } from "@/lib/auth/session";
 import { isLocalMode } from "@/lib/env";
 
 export default async function DashboardGroupLayout({
@@ -17,6 +17,8 @@ export default async function DashboardGroupLayout({
           name: "Admin Local",
           email: "admin@agentbee.local",
         }}
+        workspaceId={null}
+        pendingApprovalsCount={0}
       >
         {children}
       </DashboardFrame>
@@ -53,12 +55,29 @@ export default async function DashboardGroupLayout({
     "Admin User";
   const currentUserEmail = user.email ?? "workspace@agentbee.app";
 
+  const cookieWs = await getActiveWorkspaceId();
+  const activeRow =
+    memberships?.find((m) => m.workspace_id === cookieWs) ?? memberships?.[0];
+  const workspaceId = activeRow?.workspace_id ?? null;
+
+  let pendingApprovalsCount = 0;
+  if (workspaceId) {
+    const { count } = await supabase
+      .from("approvals")
+      .select("*", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId)
+      .eq("status", "pending");
+    pendingApprovalsCount = count ?? 0;
+  }
+
   return (
     <DashboardFrame
       currentUser={{
         name: currentUserName,
         email: currentUserEmail,
       }}
+      workspaceId={workspaceId}
+      pendingApprovalsCount={pendingApprovalsCount}
     >
       {children}
     </DashboardFrame>

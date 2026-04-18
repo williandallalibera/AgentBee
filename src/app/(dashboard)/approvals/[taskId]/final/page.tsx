@@ -1,12 +1,6 @@
 import { notFound } from "next/navigation";
 import { requireWorkspaceMember } from "@/lib/auth/session";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { ApprovalForm } from "@/components/approvals/approval-form";
+import { ApprovalRichWorkspace } from "@/components/approvals/approval-rich-workspace";
 import { isLocalMode } from "@/lib/env";
 import { localTasks, localVersions } from "@/lib/local-mode";
 
@@ -20,12 +14,19 @@ export default async function FinalApprovalPage({
     const task = localTasks.find((item) => item.id === taskId);
     if (!task) notFound();
     const version = localVersions[taskId as keyof typeof localVersions];
-    return renderFinalApproval({
-      taskTitle: task.title,
-      taskId,
-      copy: version?.copy_markdown ?? "Sem versão final.",
-      localMode: true,
-    });
+    return (
+      <ApprovalRichWorkspace
+        taskId={taskId}
+        phase="final"
+        taskTitle={task.title}
+        copyMarkdown={version?.copy_markdown ?? "Sem versão final."}
+        imageUrl={null}
+        agentRuns={[]}
+        previousCopy={null}
+        commentHistory={[]}
+        localMode
+      />
+    );
   }
 
   const { supabase, workspaceId } = await requireWorkspaceMember();
@@ -39,60 +40,45 @@ export default async function FinalApprovalPage({
 
   if (!task) notFound();
 
-  const { data: version } = await supabase
+  const { data: versions } = await supabase
     .from("content_versions")
-    .select("copy_markdown, carousel_structure_json")
+    .select("copy_markdown, visual_draft_url, version_number")
     .eq("task_id", taskId)
     .order("version_number", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(2);
 
-  return renderFinalApproval({
-    taskTitle: task.title,
-    taskId,
-    copy: version?.copy_markdown ?? "Nenhuma versão final ainda.",
-  });
-}
+  const latest = versions?.[0];
+  const previous = versions?.[1];
 
-function renderFinalApproval({
-  taskTitle,
-  taskId,
-  copy,
-  localMode = false,
-}: {
-  taskTitle: string;
-  taskId: string;
-  copy: string;
-  localMode?: boolean;
-}) {
+  const { data: runs } = await supabase
+    .from("agent_runs")
+    .select("stage, status, output_summary, finished_at")
+    .eq("task_id", taskId)
+    .order("finished_at", { ascending: false })
+    .limit(24);
+
+  const { data: hist } = await supabase
+    .from("approvals")
+    .select("id, comments, status, created_at")
+    .eq("task_id", taskId)
+    .order("created_at", { ascending: false })
+    .limit(12);
+
+  const imageUrl =
+    typeof latest?.visual_draft_url === "string" && latest.visual_draft_url.startsWith("http")
+      ? latest.visual_draft_url
+      : null;
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-800 dark:text-white">
-          Aprovação final
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">{taskTitle}</p>
-      </div>
-
-      <Card className="rounded bg-white shadow dark:bg-card">
-        <CardHeader className="border-b border-gray-200 dark:border-gray-700">
-          <CardTitle>Copy e estrutura</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 p-4 text-sm text-muted-foreground dark:border-gray-700 dark:bg-muted/30">
-            {copy}
-          </pre>
-        </CardContent>
-      </Card>
-
-      <Card className="rounded bg-white shadow dark:bg-card">
-        <CardHeader className="border-b border-gray-200 dark:border-gray-700">
-          <CardTitle>Decisão</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <ApprovalForm taskId={taskId} phase="final" localMode={localMode} />
-        </CardContent>
-      </Card>
-    </div>
+    <ApprovalRichWorkspace
+      taskId={taskId}
+      phase="final"
+      taskTitle={task.title}
+      copyMarkdown={latest?.copy_markdown ?? "Nenhuma versão final ainda."}
+      imageUrl={imageUrl}
+      agentRuns={(runs ?? []) as never}
+      previousCopy={previous?.copy_markdown ?? null}
+      commentHistory={(hist ?? []) as never}
+    />
   );
 }

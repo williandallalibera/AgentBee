@@ -4,12 +4,15 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { UserMenu } from "@/components/layout/user-menu";
+import { RealtimeBadges } from "@/components/layout/realtime-badges";
 import { Bell, Menu, Search } from "lucide-react";
 
 export function DashboardFrame({
   children,
   localMode = false,
   currentUser,
+  workspaceId = null,
+  pendingApprovalsCount = 0,
 }: {
   children: ReactNode;
   localMode?: boolean;
@@ -17,6 +20,8 @@ export function DashboardFrame({
     name: string;
     email: string;
   };
+  workspaceId?: string | null;
+  pendingApprovalsCount?: number;
 }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
@@ -58,6 +63,7 @@ export function DashboardFrame({
         isOpen={isSidebarOpen}
         onNavigate={closeSidebarOnMobile}
         currentUser={currentUser}
+        pendingApprovalsCount={pendingApprovalsCount}
       />
 
       <div
@@ -108,6 +114,7 @@ export function DashboardFrame({
           {children}
         </main>
       </div>
+      <RealtimeBadges workspaceId={workspaceId} localMode={localMode} />
     </div>
   );
 }

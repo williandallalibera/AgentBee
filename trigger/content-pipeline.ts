@@ -7,7 +7,8 @@ import {
   generateSocialImageBytes,
   runAgentSpecialistStage,
 } from "../src/lib/integrations/openai";
-import { sendGoogleChatMessage } from "../src/lib/integrations/google-chat";
+import { sendGoogleChatCard, sendGoogleChatMessage } from "../src/lib/integrations/google-chat";
+import { buildApprovalCard } from "../src/lib/integrations/google-chat-cards";
 import { sendApprovalEmail } from "../src/lib/integrations/email";
 import { ensureWorkspaceAgents, getAgentIdByRole } from "../src/lib/agents/ensure-workspace-agents";
 import { uploadSocialAssetPng } from "../src/lib/storage/social-art";
@@ -116,6 +117,7 @@ export const contentPipeline = task({
     });
     if (researcherId) {
       await supabase.from("agent_runs").insert({
+        workspace_id: wsId,
         agent_id: researcherId,
         task_id: payload.taskId,
         stage: "research",
@@ -150,6 +152,7 @@ export const contentPipeline = task({
     });
     if (plannerId) {
       await supabase.from("agent_runs").insert({
+        workspace_id: wsId,
         agent_id: plannerId,
         task_id: payload.taskId,
         stage: "plan",
@@ -196,6 +199,7 @@ export const contentPipeline = task({
       .from("approvals")
       .insert({
         task_id: payload.taskId,
+        workspace_id: wsId,
         approval_type: "initial_summary",
         target_id: proposalRow.id,
         status: "pending",
@@ -219,14 +223,22 @@ export const contentPipeline = task({
       .eq("id", approval1.id);
 
     if (googleChatWebhook) {
-      await sendGoogleChatMessage(googleChatWebhook, {
+      const card = buildApprovalCard({
+        taskId: payload.taskId,
+        stage: "initial",
+        title: taskRow.title as string,
+        caption: proposal.summary_markdown,
+        imageUrl: null,
+        webUrl: approvalLink,
+      });
+      await sendGoogleChatCard(googleChatWebhook, card, {
         title: "Preciso de uma revisão rápida da direção desta peça",
-        subtitle: taskRow.title,
+        subtitle: taskRow.title as string,
         lines: [
           ...proposal.summary_markdown.slice(0, 500).split("\n").slice(0, 6),
           "",
-          `Se estiver ok, me respondam aqui com "aprovar ${payload.taskId}".`,
-          `Se precisarem de ajuste, podem responder "reprovar ${payload.taskId} <motivo>".`,
+          `Se estiver ok: botão Aprovar no card ou "aprovar ${payload.taskId}".`,
+          `Ajuste: "reprovar ${payload.taskId} <motivo>".`,
         ],
         linkUrl: approvalLink,
       });
@@ -362,6 +374,7 @@ export const contentPipeline = task({
     });
     if (copywriterId) {
       await supabase.from("agent_runs").insert({
+        workspace_id: wsId,
         agent_id: copywriterId,
         task_id: payload.taskId,
         stage: "copy_art",
@@ -402,6 +415,7 @@ export const contentPipeline = task({
     }
     if (artDirectorId) {
       await supabase.from("agent_runs").insert({
+        workspace_id: wsId,
         agent_id: artDirectorId,
         task_id: payload.taskId,
         stage: "visual",
@@ -416,6 +430,7 @@ export const contentPipeline = task({
 
     const auditorId = await getAgentIdByRole(supabase, wsId, "auditor");
     await supabase.from("agent_runs").insert({
+      workspace_id: wsId,
       agent_id: auditorId,
       task_id: payload.taskId,
       stage: "audit",
@@ -439,6 +454,7 @@ export const contentPipeline = task({
       .from("approvals")
       .insert({
         task_id: payload.taskId,
+        workspace_id: wsId,
         approval_type: "final_delivery",
         target_id: versionRow.id,
         status: "pending",
@@ -462,14 +478,22 @@ export const contentPipeline = task({
       .eq("id", approval2.id);
 
     if (googleChatWebhook) {
-      await sendGoogleChatMessage(googleChatWebhook, {
+      const card = buildApprovalCard({
+        taskId: payload.taskId,
+        stage: "final",
+        title: taskRow.title as string,
+        caption: gen.copy_markdown,
+        imageUrl: visualUrl,
+        webUrl: finalLink,
+      });
+      await sendGoogleChatCard(googleChatWebhook, card, {
         title: "Versão final pronta para aprovação",
-        subtitle: taskRow.title,
+        subtitle: taskRow.title as string,
         lines: [
           gen.copy_markdown.slice(0, 400),
           "",
-          `Se estiver aprovado, me respondam aqui com "aprovar ${payload.taskId}".`,
-          `Se quiserem ajuste, podem responder "reprovar ${payload.taskId} <motivo>".`,
+          `Aprovar: botão no card ou "aprovar ${payload.taskId}".`,
+          `Ajuste: "reprovar ${payload.taskId} <motivo>".`,
         ],
         linkUrl: finalLink,
       });
@@ -585,6 +609,7 @@ export const contentPipeline = task({
       .from("publications")
       .insert({
         task_id: payload.taskId,
+        workspace_id: wsId,
         channel_type: calendarItem?.channel_type ?? "instagram",
         scheduled_at: scheduledAt,
         status: "pending",
@@ -596,6 +621,7 @@ export const contentPipeline = task({
     const publisherId = await getAgentIdByRole(supabase, wsId, "publisher");
     if (publisherId) {
       await supabase.from("agent_runs").insert({
+        workspace_id: wsId,
         agent_id: publisherId,
         task_id: payload.taskId,
         stage: "publish",
@@ -609,10 +635,30 @@ export const contentPipeline = task({
     }
 
     if (publicationRow?.id && process.env.TRIGGER_SECRET_KEY?.trim()) {
+      const pubId = publicationRow.id as string;
+      const schedulerOff = process.env.SOCIAL_AUTO_SCHEDULER_ENABLED?.trim() === "false";
+      const nowMs = Date.now();
+      const targetMs = scheduledAt ? new Date(scheduledAt).getTime() : nowMs;
+      const delayMs = Math.max(0, targetMs - nowMs);
       try {
-        await tasks.trigger("publish-social", {
-          publicationId: publicationRow.id as string,
-        });
+        if (schedulerOff || delayMs < 60_000) {
+          await tasks.trigger("publish-social", { publicationId: pubId });
+        } else {
+          const handle = await tasks.trigger(
+            "publish-social",
+            { publicationId: pubId },
+            { delay: new Date(targetMs) },
+          );
+          const runId = handle && typeof (handle as { id?: string }).id === "string"
+            ? (handle as { id: string }).id
+            : null;
+          if (runId) {
+            await supabase
+              .from("publications")
+              .update({ scheduled_trigger_run_id: runId })
+              .eq("id", pubId);
+          }
+        }
       } catch (e) {
         console.warn("publish_social_trigger_failed", e);
       }

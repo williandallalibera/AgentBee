@@ -109,6 +109,7 @@ export type ChiefAgentPlanIntent =
   | "upcoming_posts"
   | "approve_task"
   | "reject_task"
+  | "new_direction_task"
   | "cancel_task"
   | "reschedule_item"
   | "create_campaign"
@@ -118,6 +119,11 @@ export type ChiefAgentPlanIntent =
   | "pause_campaign"
   | "resume_campaign"
   | "task_detail"
+  | "retry_publication"
+  | "chief_preview_post"
+  | "chief_explain"
+  | "chief_list_failures"
+  | "chief_focus"
   | "help"
   | "ignore";
 
@@ -162,6 +168,15 @@ export type ChiefAgentPlan = {
   startTaskTriggerPipeline?: boolean | null;
   /** Intenções pause_campaign / resume_campaign — UUID da campanha (use snapshot.recentCampaigns). */
   targetCampaignId?: string | null;
+  /** republicar / retry_publication */
+  publicationId?: string | null;
+  /** chief_explain */
+  explainTopic?: string | null;
+  /** chief_list_failures */
+  failuresSinceHours?: number | null;
+  /** chief_focus */
+  focusTaskId?: string | null;
+  focusCampaignId?: string | null;
 };
 
 export type ChiefAgentSnapshot = {
@@ -203,6 +218,8 @@ export type ChiefAgentSnapshot = {
     status: string;
     objective: string | null;
   }>;
+  /** Tom do agente chefe (campo persona_tone em agents.role=chief). */
+  chiefPersonaTone: string | null;
 };
 
 export type ConversationTurn = {
@@ -286,6 +303,7 @@ export async function loadChiefAgentSnapshot(
     { data: playbookDocs },
     { data: brandRows },
     { data: calendarData },
+    { data: chiefAgentRow },
   ] = await Promise.all([
     supabase
       .from("content_tasks")
@@ -306,7 +324,15 @@ export async function loadChiefAgentSnapshot(
       .eq("workspace_id", workspaceId)
       .gte("planned_date", today)
       .order("planned_date", { ascending: true })
-      .limit(12),
+      .limit(28),
+    supabase
+      .from("agents")
+      .select("persona_tone")
+      .eq("workspace_id", workspaceId)
+      .eq("role", "chief")
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   const tasks = (tasksData ?? []) as TaskRow[];
@@ -328,7 +354,7 @@ export async function loadChiefAgentSnapshot(
   const playbookExcerpt = ((playbookDocs ?? []) as PlaybookRow[])
     .map((row) => row.content_markdown)
     .join("\n\n")
-    .slice(0, 8000);
+    .slice(0, chiefPlaybookSnapshotChars());
 
   let pendingApprovals: ApprovalRow[] = [];
   if (taskIds.length > 0) {
@@ -338,7 +364,7 @@ export async function loadChiefAgentSnapshot(
       .eq("status", "pending")
       .in("task_id", taskIds)
       .order("created_at", { ascending: false })
-      .limit(12);
+      .limit(24);
     pendingApprovals = (approvalsData ?? []) as ApprovalRow[];
   }
 
@@ -347,7 +373,7 @@ export async function loadChiefAgentSnapshot(
   const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
 
   return {
-    recentTasks: tasks.slice(0, 8).map((task) => ({
+    recentTasks: tasks.slice(0, 18).map((task) => ({
       id: task.id,
       title: task.title,
       status: task.status,
@@ -375,7 +401,7 @@ export async function loadChiefAgentSnapshot(
     })),
     blockedItems: calendarItems
       .filter((item) => ["blocked", "rescheduled", "awaiting_approval"].includes(item.status))
-      .slice(0, 6)
+      .slice(0, 14)
       .map((item) => ({
         id: item.id,
         plannedDate: item.planned_date,
@@ -390,13 +416,24 @@ export async function loadChiefAgentSnapshot(
       status: c.status,
       objective: c.objective ?? null,
     })),
+    chiefPersonaTone:
+      chiefAgentRow &&
+      typeof (chiefAgentRow as { persona_tone?: string }).persona_tone === "string"
+        ? (chiefAgentRow as { persona_tone: string }).persona_tone.trim() || null
+        : null,
   };
 }
 
-function chiefHistoryLimit() {
+export function chiefHistoryLimit() {
   const raw = process.env.CHIEF_HISTORY_LIMIT?.trim();
-  const n = raw ? Number.parseInt(raw, 10) : 24;
-  return Number.isFinite(n) && n >= 1 && n <= 80 ? n : 24;
+  const n = raw ? Number.parseInt(raw, 10) : 48;
+  return Number.isFinite(n) && n >= 1 && n <= 120 ? n : 48;
+}
+
+function chiefPlaybookSnapshotChars() {
+  const raw = process.env.CHIEF_PLAYBOOK_SNAPSHOT_CHARS?.trim();
+  const n = raw ? Number.parseInt(raw, 10) : 16_000;
+  return Number.isFinite(n) && n >= 2000 && n <= 60_000 ? n : 16_000;
 }
 
 export async function loadChiefConversationHistory(
@@ -461,7 +498,7 @@ export async function upsertChiefThreadSummary(
       workspace_id: workspaceId,
       external_channel: "google_chat",
       external_thread_id: threadKey,
-      summary_text: summaryText.slice(0, 12000),
+      summary_text: summaryText.slice(0, 20_000),
       updated_at: new Date().toISOString(),
     },
     { onConflict: "workspace_id,external_channel,external_thread_id" },
@@ -486,10 +523,35 @@ export function extractCardActionAsCommand(payload: GoogleChatEventPayload): str
       return taskId ? `aprovar ${taskId}` : "";
     case "reject_task":
     case "chief_reject":
-      return taskId ? `reprovar ${taskId}${reason ? ` ${reason}` : ""}` : "";
+    case "chief_request_revision":
+      return taskId
+        ? `reprovar ${taskId}${reason ? ` ${reason}` : " Pedido de ajuste pelo card — complemente o motivo em texto se quiser."}`
+        : "";
+    case "chief_new_direction":
+      return taskId ? `nova_direcao ${taskId}` : "";
     case "cancel_task":
     case "chief_cancel":
       return taskId ? `cancelar ${taskId}${reason ? ` ${reason}` : ""}` : "";
+    case "start_calendar_item": {
+      const itemId = params.get("itemId") ?? params.get("item_id") ?? "";
+      return itemId ? `iniciar_slot_calendario ${itemId}` : "";
+    }
+    case "reschedule_calendar_item": {
+      const itemId = params.get("itemId") ?? params.get("item_id") ?? "";
+      if (!itemId) return "";
+      const offset = Math.min(
+        30,
+        Math.max(1, Number.parseInt(params.get("offsetDays") ?? "1", 10) || 1),
+      );
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() + offset);
+      const ymd = d.toISOString().slice(0, 10);
+      return `reagendar ${itemId} ${ymd}`;
+    }
+    case "retry_publication": {
+      const publicationId = params.get("publicationId") ?? params.get("publication_id") ?? "";
+      return publicationId ? `retry_publicacao ${publicationId}` : "";
+    }
     default:
       return "";
   }
@@ -611,12 +673,17 @@ export async function planChiefAgentResponse(input: {
             instructions: {
               response_shape: {
                 intent:
-                  "chat | pending_approvals | task_status | campaign_status | upcoming_posts | approve_task | reject_task | cancel_task | reschedule_item | create_campaign | generate_calendar | start_task | create_task | pause_campaign | resume_campaign | task_detail | help | ignore",
+                  "chat | pending_approvals | task_status | campaign_status | upcoming_posts | approve_task | reject_task | new_direction_task | cancel_task | reschedule_item | create_campaign | generate_calendar | start_task | create_task | pause_campaign | resume_campaign | task_detail | retry_publication | chief_preview_post | chief_explain | chief_list_failures | chief_focus | help | ignore",
                 reply: "string — resumo operacional",
-                taskId: "string|null — content_tasks.id (approve, reject, cancel_task, task_detail)",
+                taskId: "string|null — content_tasks.id (approve, reject, cancel_task, task_detail, chief_preview_post)",
                 itemId: "string|null — calendar_items.id (start_task, reschedule)",
                 date: "YYYY-MM-DD|null",
                 comments: "string|null",
+                publicationId: "string|null — publications.id (retry_publication)",
+                explainTopic: "string|null — chief_explain",
+                failuresSinceHours: "number|null — chief_list_failures (1-168)",
+                focusTaskId: "string|null — chief_focus",
+                focusCampaignId: "string|null — chief_focus",
                 campaignDraft:
                   "{ name, objective, channels, slotCount, autoStartTasks, autoStartCount } | null",
                 generateCalendarParams:
@@ -879,6 +946,41 @@ function fallbackChiefAgentPlan(
         campaignDraft: null,
         confidence: "high",
       };
+    case "new_direction_task":
+      return {
+        intent: "new_direction_task",
+        reply: "Vou registrar pedido de nova direção e devolver para replanejamento.",
+        taskId: intent.taskId,
+        itemId: null,
+        date: null,
+        comments: intent.comments ?? null,
+        campaignDraft: null,
+        confidence: "high",
+      };
+    case "retry_publication":
+      return {
+        intent: "retry_publication",
+        reply: "Vou reenfileirar essa publicação.",
+        taskId: null,
+        itemId: null,
+        date: null,
+        comments: null,
+        publicationId: intent.publicationId,
+        campaignDraft: null,
+        confidence: "high",
+      };
+    case "start_calendar_slot":
+      return {
+        intent: "start_task",
+        reply: "Iniciando produção a partir do slot do calendário.",
+        taskId: null,
+        itemId: intent.itemId,
+        date: null,
+        comments: null,
+        campaignDraft: null,
+        startTaskTriggerPipeline: true,
+        confidence: "high",
+      };
     case "cancel_task":
       return {
         intent: "cancel_task",
@@ -1064,6 +1166,7 @@ export function normalizeChiefAgentPlan(
     "upcoming_posts",
     "approve_task",
     "reject_task",
+    "new_direction_task",
     "cancel_task",
     "reschedule_item",
     "create_campaign",
@@ -1073,6 +1176,11 @@ export function normalizeChiefAgentPlan(
     "pause_campaign",
     "resume_campaign",
     "task_detail",
+    "retry_publication",
+    "chief_preview_post",
+    "chief_explain",
+    "chief_list_failures",
+    "chief_focus",
     "help",
     "ignore",
   ];
@@ -1090,6 +1198,36 @@ export function normalizeChiefAgentPlan(
   const rawItemId = typeof plan.itemId === "string" ? plan.itemId.trim() : null;
   const date = typeof plan.date === "string" ? plan.date.trim() : null;
   const comments = typeof plan.comments === "string" ? plan.comments.trim() : null;
+  const rawPublicationId =
+    typeof plan.publicationId === "string"
+      ? plan.publicationId.trim()
+      : typeof plan.publication_id === "string"
+        ? plan.publication_id.trim()
+        : null;
+  const explainTopic =
+    typeof plan.explainTopic === "string"
+      ? plan.explainTopic.trim()
+      : typeof plan.explain_topic === "string"
+        ? plan.explain_topic.trim()
+        : null;
+  const rawFailuresSince =
+    plan.failuresSinceHours ?? plan.failures_since_hours ?? plan.since_hours;
+  const failuresSinceHours =
+    typeof rawFailuresSince === "number" && Number.isFinite(rawFailuresSince)
+      ? Math.min(168, Math.max(1, Math.floor(rawFailuresSince)))
+      : null;
+  const rawFocusTask =
+    typeof plan.focusTaskId === "string"
+      ? plan.focusTaskId.trim()
+      : typeof plan.focus_task_id === "string"
+        ? plan.focus_task_id.trim()
+        : null;
+  const rawFocusCampaign =
+    typeof plan.focusCampaignId === "string"
+      ? plan.focusCampaignId.trim()
+      : typeof plan.focus_campaign_id === "string"
+        ? plan.focus_campaign_id.trim()
+        : null;
   const reply =
     typeof plan.reply === "string" && plan.reply.trim().length > 0
       ? plan.reply.trim()
@@ -1106,7 +1244,12 @@ export function normalizeChiefAgentPlan(
   const startTaskTriggerPipeline =
     typeof stpRaw === "boolean" ? stpRaw : null;
 
-  if (intent === "approve_task" || intent === "reject_task" || intent === "cancel_task") {
+  if (
+    intent === "approve_task" ||
+    intent === "reject_task" ||
+    intent === "new_direction_task" ||
+    intent === "cancel_task"
+  ) {
     const taskId = rawTaskId;
     if (!taskId || !snapshot.pendingApprovals.some((approval) => approval.taskId === taskId)) {
       return {
@@ -1130,6 +1273,97 @@ export function normalizeChiefAgentPlan(
       date: null,
       comments,
       campaignDraft: null,
+      confidence,
+    };
+  }
+
+  if (intent === "retry_publication") {
+    const publicationId = rawPublicationId;
+    if (!publicationId || !/^[a-f0-9-]{8,}$/i.test(publicationId)) {
+      return {
+        ...fallback,
+        intent: "chat",
+        reply: "Para reenviar, preciso do UUID da publicação (veja no painel ou na mensagem de falha).",
+        taskId: null,
+        itemId: null,
+        date: null,
+        comments: null,
+        publicationId: null,
+        campaignDraft: null,
+        confidence: "low",
+      };
+    }
+    return {
+      intent: "retry_publication",
+      reply,
+      taskId: null,
+      itemId: null,
+      date: null,
+      comments: null,
+      publicationId,
+      campaignDraft: null,
+      confidence,
+    };
+  }
+
+  if (
+    intent === "chief_preview_post" ||
+    intent === "chief_explain" ||
+    intent === "chief_list_failures" ||
+    intent === "chief_focus"
+  ) {
+    if (intent === "chief_focus" && !rawFocusTask && !rawFocusCampaign) {
+      return {
+        ...fallback,
+        intent: "chat",
+        reply: "Para focar, envie task_id ou campaign_id.",
+        taskId: null,
+        itemId: null,
+        date: null,
+        comments: null,
+        campaignDraft: null,
+        confidence: "low",
+      };
+    }
+    if (intent === "chief_preview_post" && !rawTaskId) {
+      return {
+        ...fallback,
+        intent: "chat",
+        reply: "chief_preview_post precisa de task_id.",
+        taskId: null,
+        itemId: null,
+        date: null,
+        comments: null,
+        campaignDraft: null,
+        confidence: "low",
+      };
+    }
+    if (intent === "chief_explain" && !explainTopic) {
+      return {
+        ...fallback,
+        intent: "chat",
+        reply: "Sobre o que você quer explicação? (topic)",
+        taskId: null,
+        itemId: null,
+        date: null,
+        comments: null,
+        campaignDraft: null,
+        confidence: "low",
+      };
+    }
+    return {
+      intent,
+      reply,
+      taskId: rawTaskId,
+      itemId: rawItemId,
+      date: null,
+      comments,
+      campaignDraft: null,
+      publicationId: rawPublicationId,
+      explainTopic: explainTopic || null,
+      failuresSinceHours,
+      focusTaskId: rawFocusTask,
+      focusCampaignId: rawFocusCampaign,
       confidence,
     };
   }

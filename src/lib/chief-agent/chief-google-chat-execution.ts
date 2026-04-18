@@ -1,5 +1,7 @@
-import { wait } from "@trigger.dev/sdk/v3";
+import { tasks, wait } from "@trigger.dev/sdk/v3";
 import type { createServiceSupabaseClient } from "@/lib/supabase/service";
+import { buildApprovalCard } from "@/lib/integrations/google-chat-cards";
+import { sendGoogleChatCard } from "@/lib/integrations/google-chat";
 import {
   formatCampaignStatusReply,
   formatHelpReply,
@@ -50,6 +52,43 @@ export async function executeChiefAgentPlan(input: {
         taskId: input.plan.taskId,
         decision: "revision",
         comments: input.plan.comments,
+      });
+    case "new_direction_task":
+      return await applyApprovalDecisionFromGoogleChat({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        taskId: input.plan.taskId,
+        decision: "new_direction",
+        comments: input.plan.comments,
+      });
+    case "retry_publication":
+      return await retryPublicationFromGoogleChat({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        publicationId: input.plan.publicationId ?? null,
+      });
+    case "chief_preview_post":
+      return await chiefPreviewPostInChat({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        taskId: input.plan.taskId,
+        snapshot: input.snapshot,
+      });
+    case "chief_explain":
+      return chiefExplainFromSnapshot(input.snapshot, input.plan.explainTopic);
+    case "chief_list_failures":
+      return await chiefListFailures({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        sinceHours: input.plan.failuresSinceHours ?? 48,
+      });
+    case "chief_focus":
+      return await chiefFocusDetail({
+        supabase: input.supabase,
+        workspaceId: input.workspaceId,
+        taskId: input.plan.focusTaskId ?? input.plan.taskId,
+        campaignId: input.plan.focusCampaignId ?? null,
+        snapshot: input.snapshot,
       });
     case "cancel_task":
       return await cancelPendingApprovalFromGoogleChat({
@@ -230,7 +269,7 @@ async function applyApprovalDecisionFromGoogleChat(input: {
   supabase: ServiceSupabase;
   workspaceId: string;
   taskId: string | null;
-  decision: "approve" | "revision";
+  decision: "approve" | "revision" | "new_direction";
   comments: string | null;
 }) {
   if (!input.taskId) {
@@ -272,17 +311,23 @@ async function applyApprovalDecisionFromGoogleChat(input: {
     input.comments?.trim() ||
     (input.decision === "approve"
       ? "Aprovado via Google Chat"
-      : "Solicitado ajuste via Google Chat");
+      : input.decision === "new_direction"
+        ? "Nova direção solicitada via Google Chat"
+        : "Solicitado ajuste via Google Chat");
+
+  const tokenAction =
+    input.decision === "new_direction" ? "new_direction" : input.decision;
 
   await wait.completeToken(approval.wait_token_id, {
-    action: input.decision,
+    action: tokenAction as "approve" | "revision" | "new_direction" | "cancel",
     comments: decisionComments,
   });
 
   await input.supabase
     .from("approvals")
     .update({
-      status: input.decision === "approve" ? "approved" : "rejected",
+      status:
+        input.decision === "approve" ? "approved" : "rejected",
       channel_type: "google_chat",
       comments: decisionComments,
       responded_at: new Date().toISOString(),
@@ -293,12 +338,16 @@ async function applyApprovalDecisionFromGoogleChat(input: {
     await input.supabase
       .from("content_tasks")
       .update({
-        status: input.decision === "approve" ? "creating" : "in_revision",
+        status:
+          input.decision === "approve" ? "creating" : "in_revision",
         current_stage: input.decision === "approve" ? "copy_art" : "plan",
       })
       .eq("id", task.id);
 
-    if (task.calendar_item_id && input.decision === "revision") {
+    if (
+      task.calendar_item_id &&
+      (input.decision === "revision" || input.decision === "new_direction")
+    ) {
       await input.supabase
         .from("calendar_items")
         .update({
@@ -329,7 +378,8 @@ async function applyApprovalDecisionFromGoogleChat(input: {
   await input.supabase
     .from("content_tasks")
     .update({
-      status: input.decision === "approve" ? "approved" : "in_revision",
+      status:
+        input.decision === "approve" ? "approved" : "in_revision",
       current_stage: input.decision === "approve" ? "publish" : "copy_art",
     })
     .eq("id", task.id);
@@ -418,4 +468,252 @@ async function rescheduleCalendarItemFromGoogleChat(input: {
 
   const title = item.topic_title ?? item.topic ?? item.id;
   return `Reagendei "${title}" para ${input.date}.`;
+}
+
+async function retryPublicationFromGoogleChat(input: {
+  supabase: ServiceSupabase;
+  workspaceId: string;
+  publicationId: string | null;
+}): Promise<string> {
+  if (!input.publicationId?.trim()) {
+    return "Preciso do id da publicação para reenviar.";
+  }
+  if (!process.env.TRIGGER_SECRET_KEY?.trim()) {
+    return "TRIGGER_SECRET_KEY não está configurada — não consigo reenfileirar a publicação.";
+  }
+
+  const { data: pub } = await input.supabase
+    .from("publications")
+    .select("id, task_id, status")
+    .eq("id", input.publicationId.trim())
+    .maybeSingle();
+
+  if (!pub?.task_id) {
+    return "Publicação não encontrada.";
+  }
+
+  const { data: task } = await input.supabase
+    .from("content_tasks")
+    .select("id, workspace_id, title")
+    .eq("id", pub.task_id)
+    .maybeSingle();
+
+  if (!task || task.workspace_id !== input.workspaceId) {
+    return "Essa publicação não pertence ao workspace atual.";
+  }
+
+  await input.supabase
+    .from("publications")
+    .update({
+      status: "pending",
+      last_error: null,
+      retry_count: 0,
+      next_attempt_at: null,
+    })
+    .eq("id", pub.id);
+
+  try {
+    await tasks.trigger("publish-social", { publicationId: pub.id as string });
+  } catch (e) {
+    return `Não consegui disparar publish-social: ${e instanceof Error ? e.message : "erro"}.`;
+  }
+
+  return `Reenfileirei a publicação (${pub.id}) para «${task.title}».`;
+}
+
+async function chiefPreviewPostInChat(input: {
+  supabase: ServiceSupabase;
+  workspaceId: string;
+  taskId: string | null;
+  snapshot: ChiefAgentSnapshot;
+}): Promise<string> {
+  if (!input.taskId?.trim()) {
+    return "Use chief_preview_post com task_id (UUID da tarefa).";
+  }
+
+  const detail = await formatTaskDetailReplyFromChief(
+    input.supabase,
+    input.workspaceId,
+    input.taskId.trim(),
+  );
+
+  const { data: gc } = await input.supabase
+    .from("integrations")
+    .select("config_metadata_json")
+    .eq("workspace_id", input.workspaceId)
+    .eq("provider", "google_chat")
+    .maybeSingle();
+  const webhook = (
+    gc?.config_metadata_json as { webhook_url?: string } | null
+  )?.webhook_url?.trim();
+
+  if (!webhook) {
+    return `${detail}\n\n(Webhook do Google Chat não configurado — não enviei card.)`;
+  }
+
+  const { data: task } = await input.supabase
+    .from("content_tasks")
+    .select("id, title, status")
+    .eq("id", input.taskId.trim())
+    .maybeSingle();
+
+  const { data: version } = await input.supabase
+    .from("content_versions")
+    .select("copy_markdown, visual_draft_url")
+    .eq("task_id", input.taskId.trim())
+    .order("version_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const { data: pend } = await input.supabase
+    .from("approvals")
+    .select("approval_type")
+    .eq("task_id", input.taskId.trim())
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const stage =
+    pend?.approval_type === "final_delivery" || task?.status === "awaiting_final_approval"
+      ? "final"
+      : "initial";
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
+  const webUrl =
+    stage === "final"
+      ? `${appUrl}/approvals/${input.taskId}/final`
+      : `${appUrl}/approvals/${input.taskId}/initial`;
+
+  const card = buildApprovalCard({
+    taskId: input.taskId.trim(),
+    stage,
+    title: task?.title ?? "Preview",
+    caption: (version?.copy_markdown ?? detail).slice(0, 4000),
+    imageUrl: version?.visual_draft_url ?? null,
+    webUrl,
+  });
+
+  await sendGoogleChatCard(webhook, card, {
+    title: "Preview da peça",
+    subtitle: task?.title ?? "",
+    lines: [detail.slice(0, 800)],
+    linkUrl: webUrl,
+  });
+
+  return "Enviei um card no espaço com o preview (copy + arte, se houver).";
+}
+
+function chiefExplainFromSnapshot(snapshot: ChiefAgentSnapshot, topic: string | null | undefined) {
+  const t = topic?.trim() || "o playbook e a operação";
+  const pb = snapshot.playbookExcerpt?.trim() || "(playbook vazio)";
+  return [
+    `Sobre *${t}* — com base no playbook e no snapshot atual:`,
+    "",
+    pb.slice(0, 3500),
+    "",
+    `Pendências: ${snapshot.pendingApprovals.length}. Próximos slots no calendário: ${snapshot.upcomingPosts.length}.`,
+  ].join("\n");
+}
+
+async function chiefListFailures(input: {
+  supabase: ServiceSupabase;
+  workspaceId: string;
+  sinceHours: number;
+}): Promise<string> {
+  const since = new Date(Date.now() - input.sinceHours * 3600 * 1000).toISOString();
+
+  const { data: pubs } = await input.supabase
+    .from("publications")
+    .select("id, last_error, channel_type, created_at, task_id")
+    .eq("status", "failed")
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(12);
+
+  const taskIds = [...new Set((pubs ?? []).map((p) => p.task_id))];
+  const taskTitles = new Map<string, string>();
+  if (taskIds.length > 0) {
+    const { data: tasksData } = await input.supabase
+      .from("content_tasks")
+      .select("id, title, workspace_id")
+      .in("id", taskIds)
+      .eq("workspace_id", input.workspaceId);
+    for (const row of tasksData ?? []) {
+      taskTitles.set(row.id, row.title);
+    }
+  }
+
+  const pubLines = (pubs ?? [])
+    .filter((p) => taskTitles.has(p.task_id))
+    .map(
+      (p) =>
+        `• pub ${p.id} (${p.channel_type}) task «${taskTitles.get(p.task_id)}»: ${p.last_error ?? "erro"}`,
+    );
+
+  const { data: runs } = await input.supabase
+    .from("agent_runs")
+    .select("id, stage, error_message, finished_at, task_id")
+    .eq("status", "error")
+    .gte("finished_at", since)
+    .order("finished_at", { ascending: false })
+    .limit(12);
+
+  const runTaskIds = [...new Set((runs ?? []).map((r) => r.task_id).filter(Boolean) as string[])];
+  const runTitles = new Map<string, string>();
+  if (runTaskIds.length > 0) {
+    const { data: t2 } = await input.supabase
+      .from("content_tasks")
+      .select("id, title, workspace_id")
+      .in("id", runTaskIds)
+      .eq("workspace_id", input.workspaceId);
+    for (const row of t2 ?? []) {
+      runTitles.set(row.id, row.title);
+    }
+  }
+
+  const runLines = (runs ?? [])
+    .filter((r) => r.task_id && runTitles.has(r.task_id))
+    .map(
+      (r) =>
+        `• run ${r.stage} task «${runTitles.get(r.task_id!)}»: ${r.error_message ?? "erro"}`,
+    );
+
+  if (pubLines.length === 0 && runLines.length === 0) {
+    return `Nenhuma falha registrada nas últimas ${input.sinceHours}h neste workspace.`;
+  }
+
+  return ["Falhas recentes:", "", ...pubLines, ...runLines].join("\n");
+}
+
+async function chiefFocusDetail(input: {
+  supabase: ServiceSupabase;
+  workspaceId: string;
+  taskId: string | null;
+  campaignId: string | null;
+  snapshot: ChiefAgentSnapshot;
+}): Promise<string> {
+  const parts: string[] = [];
+  if (input.taskId?.trim()) {
+    parts.push(
+      await formatTaskDetailReplyFromChief(
+        input.supabase,
+        input.workspaceId,
+        input.taskId.trim(),
+      ),
+    );
+  }
+  const campaignIdTrimmed = input.campaignId?.trim();
+  if (campaignIdTrimmed) {
+    const c = input.snapshot.recentCampaigns.find((x) => x.id === campaignIdTrimmed);
+    if (c) {
+      parts.push(`Campanha em foco: ${c.name} (${c.status}) — ${c.objective ?? "sem objetivo"}`);
+    } else {
+      parts.push(`Campanha ${campaignIdTrimmed} não está no snapshot recente.`);
+    }
+  }
+  if (parts.length === 0) {
+    return "Use chief_focus com focus_task_id ou focus_campaign_id.";
+  }
+  return parts.join("\n\n—\n\n");
 }

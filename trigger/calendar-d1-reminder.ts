@@ -1,6 +1,7 @@
 import { schedules } from "@trigger.dev/sdk/v3";
 import { createClient } from "@supabase/supabase-js";
-import { sendGoogleChatMessage } from "../src/lib/integrations/google-chat";
+import { sendGoogleChatCard } from "../src/lib/integrations/google-chat";
+import { buildCalendarItemCard } from "../src/lib/integrations/google-chat-cards";
 
 function serviceSupabase() {
   return createClient(
@@ -121,16 +122,23 @@ export const calendarD1Reminder = schedules.task({
         : `${appUrl}/calendar`;
 
       if (webhookUrl) {
-        await sendGoogleChatMessage(webhookUrl, {
+        const card = buildCalendarItemCard({
+          itemId: item.id,
+          date: item.planned_date,
+          title: item.topic_title ?? item.topic ?? "Postagem planejada",
+          taskId: item.content_task_id,
+          approvalWebUrl: approvalLink,
+        });
+        await sendGoogleChatCard(webhookUrl, card, {
           title: "Atenção: bloqueei uma publicação por falta de aprovação final",
           subtitle: item.topic_title ?? item.topic ?? "Postagem planejada",
           lines: [
             `Data planejada: ${item.planned_date}`,
             "A publicação ficou bloqueada até a aprovação final passar.",
             item.content_task_id
-              ? `Se estiver tudo certo, podem me responder "aprovar ${item.content_task_id}".`
+              ? `Ou respondam "aprovar ${item.content_task_id}".`
               : "Posso ajudar a destravar isso por aqui.",
-            `Para mover a data, respondam "reagendar ${item.id} <yyyy-mm-dd>".`,
+            `Reagendar: "reagendar ${item.id} <yyyy-mm-dd>" ou botão no card.`,
           ],
           linkUrl: approvalLink,
           linkLabel: "Resolver agora",

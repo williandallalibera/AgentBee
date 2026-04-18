@@ -1,0 +1,116 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildApprovalCard > inclui cardsV2 com botões e taskId nos parâmetros 1`] = `
+{
+  "cardsV2": [
+    {
+      "card": {
+        "header": {
+          "subtitle": "Aprovação final",
+          "title": "Campanha Q2",
+        },
+        "sections": [
+          {
+            "widgets": [
+              {
+                "image": {
+                  "altText": "Campanha Q2",
+                  "imageUrl": "https://example.com/a.png",
+                },
+              },
+              {
+                "decoratedText": {
+                  "text": "Texto do post",
+                  "topLabel": "Aprovação final",
+                  "wrapText": true,
+                },
+              },
+              {
+                "buttonList": {
+                  "buttons": [
+                    {
+                      "onClick": {
+                        "action": {
+                          "actionMethodName": "chief_approve",
+                          "function": "chief_approve",
+                          "parameters": [
+                            {
+                              "key": "taskId",
+                              "value": "550e8400-e29b-41d4-a716-446655440000",
+                            },
+                          ],
+                        },
+                      },
+                      "text": "Aprovar",
+                    },
+                    {
+                      "onClick": {
+                        "action": {
+                          "actionMethodName": "chief_request_revision",
+                          "function": "chief_request_revision",
+                          "parameters": [
+                            {
+                              "key": "taskId",
+                              "value": "550e8400-e29b-41d4-a716-446655440000",
+                            },
+                          ],
+                        },
+                      },
+                      "text": "Pedir ajuste",
+                    },
+                    {
+                      "onClick": {
+                        "action": {
+                          "actionMethodName": "chief_new_direction",
+                          "function": "chief_new_direction",
+                          "parameters": [
+                            {
+                              "key": "taskId",
+                              "value": "550e8400-e29b-41d4-a716-446655440000",
+                            },
+                          ],
+                        },
+                      },
+                      "text": "Nova direção",
+                    },
+                    {
+                      "onClick": {
+                        "action": {
+                          "actionMethodName": "chief_cancel",
+                          "function": "chief_cancel",
+                          "parameters": [
+                            {
+                              "key": "taskId",
+                              "value": "550e8400-e29b-41d4-a716-446655440000",
+                            },
+                          ],
+                        },
+                      },
+                      "text": "Cancelar fluxo",
+                    },
+                  ],
+                },
+              },
+              {
+                "buttonList": {
+                  "buttons": [
+                    {
+                      "onClick": {
+                        "openLink": {
+                          "url": "https://app.example/approvals/550e8400-e29b-41d4-a716-446655440000/final",
+                        },
+                      },
+                      "text": "Abrir no AgentBee",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "cardId": "approval-550e8400-e29b-41d4-a716-446655440000-final-1700000000000",
+    },
+  ],
+}
+`;

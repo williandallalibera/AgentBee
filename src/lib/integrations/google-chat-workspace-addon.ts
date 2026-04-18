@@ -96,12 +96,13 @@ export function normalizeChatWebhookPayload(raw: unknown): GoogleChatEventPayloa
     const invoked = ccp.invokedFunction as Record<string, unknown> | undefined;
     const actionSource =
       Object.keys(rawAction).length > 0 ? rawAction : invoked ?? {};
+    const fnName =
+      typeof actionSource.function === "string" ? actionSource.function : "";
     const method =
       typeof actionSource.actionMethodName === "string"
         ? actionSource.actionMethodName
-        : typeof invoked?.name === "string"
-          ? invoked.name
-          : "";
+        : fnName ||
+          (typeof invoked?.name === "string" ? invoked.name : "");
     const parameters: Array<{ key?: string; value?: string }> = [];
     const rawParams = actionSource.parameters;
     if (Array.isArray(rawParams)) {

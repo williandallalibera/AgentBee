@@ -68,6 +68,7 @@ export function ApprovalForm({
             disabled={loading}
             onClick={() => act("approve")}
             className="w-full"
+            data-approval-action="approve"
           >
             Aprovar
           </Button>
@@ -77,6 +78,7 @@ export function ApprovalForm({
             disabled={loading}
             onClick={() => act("revision")}
             className="w-full"
+            data-approval-action="revision"
           >
             Pedir ajuste
           </Button>
@@ -86,6 +88,7 @@ export function ApprovalForm({
             disabled={loading}
             onClick={() => act("new_direction")}
             className="w-full"
+            data-approval-action="new_direction"
           >
             Nova direção
           </Button>
@@ -95,6 +98,7 @@ export function ApprovalForm({
             disabled={loading}
             onClick={() => act("cancel")}
             className="w-full"
+            data-approval-action="cancel"
           >
             Cancelar
           </Button>

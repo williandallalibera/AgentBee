@@ -8,8 +8,11 @@ export type ChiefIntent =
   | { kind: "campaign_status"; query?: string }
   | { kind: "approve_task"; taskId: string }
   | { kind: "reject_task"; taskId: string; comments?: string }
+  | { kind: "new_direction_task"; taskId: string; comments?: string }
   | { kind: "cancel_task"; taskId: string; comments?: string }
   | { kind: "reschedule_item"; itemId: string; date: string }
+  | { kind: "start_calendar_slot"; itemId: string }
+  | { kind: "retry_publication"; publicationId: string }
   | { kind: "upcoming_posts" }
   | { kind: "help" }
   | { kind: "unknown" };
@@ -41,6 +44,25 @@ export function classifyChiefIntent(message: string): ChiefIntent {
   const approve = t.match(/\baprovar\s+([a-f0-9-]{8,})/i);
   if (approve?.[1]) {
     return { kind: "approve_task", taskId: approve[1] };
+  }
+
+  const newDir = t.match(/\bnova_direcao\s+([a-f0-9-]{8,})(?:\s+(.+))?/i);
+  if (newDir?.[1]) {
+    return {
+      kind: "new_direction_task",
+      taskId: newDir[1],
+      comments: newDir[2]?.trim(),
+    };
+  }
+
+  const retryPub = t.match(/\bretry_publicacao\s+([a-f0-9-]{8,})/i);
+  if (retryPub?.[1]) {
+    return { kind: "retry_publication", publicationId: retryPub[1] };
+  }
+
+  const startSlot = t.match(/\biniciar_slot_calendario\s+([a-f0-9-]{8,})/i);
+  if (startSlot?.[1]) {
+    return { kind: "start_calendar_slot", itemId: startSlot[1] };
   }
 
   const reject = t.match(/\b(reprovar|rejeitar)\s+([a-f0-9-]{8,})(?:\s+(.+))?/i);
